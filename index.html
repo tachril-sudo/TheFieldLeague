@@ -414,6 +414,23 @@
 <script>
 (function(){
   "use strict";
+
+  /* ==========================================================================
+     PASTE YOUR SUPABASE DETAILS HERE ONCE, COMMIT, AND EVERY DEVICE THAT OPENS
+     THIS PAGE IS ALREADY SYNCED — no setup, no typing a key on a phone.
+     Both values are safe to expose in the sense that the publishable/anon key
+     is designed for browsers. Read the note in Sync setup before you commit.
+     ========================================================================== */
+  var BUILTIN_SYNC = {
+    kind:   "supabase",
+    url:    "https://uabkjkiakgvsplfzuydm.supabase.co",
+    key:    "sb_publishable_fbhVPDWR3hkONsAfiPxV3w_ODrKtJdB",
+    table:  "leagues",
+    league: "the-field",
+    auto:   true             // sync automatically when the page opens
+  };
+  /* ========================================================================== */
+
   var KEY="modestalk-league-v1";
   var START_ELO=1500;
   var SESSION_POINTS=[10,8,6,5,4,3,2,1];   // by finishing position, then 1
@@ -1657,7 +1674,27 @@
   /* ---------------- cloud sync ---------------- */
   // Any endpoint that can store and return one JSON blob works. Two presets:
   // a Supabase table row, or a plain GET/PUT URL (jsonbin, a Worker, whatever).
-  function syncCfg(){ return S.sync||null; }
+  function builtinReady(){ return !!(BUILTIN_SYNC.url && BUILTIN_SYNC.key); }
+  function syncCfg(){
+    if(S.sync===null && S.syncOff) return null;      // deliberately turned off here
+    if(S.sync) return S.sync;
+    return builtinReady() ? BUILTIN_SYNC : null;
+  }
+
+  function explain(status, body){
+    var msg="", code="";
+    try{ var j=JSON.parse(body); msg=j.message||j.error_description||j.error||j.hint||""; code=j.code||""; }
+    catch(e){ msg=(body||"").slice(0,180); }
+    var extra="";
+    if(status===401||status===403){
+      if(/row-level security|permission denied/i.test(msg) || code==="42501")
+        extra=" — the table is locked to writes. Add a policy that lets the anon role insert and update.";
+      else extra=" — the key was accepted for reading but not for writing. Almost always a row-level security policy.";
+    }
+    if(status===404) extra=" — no such table. Check the table name and that it lives in the public schema.";
+    if(status===409) extra=" — the id column probably isn't a primary key, so the upsert has nothing to match on.";
+    return "HTTP "+status+(msg?": "+msg:"")+extra;
+  }
 
   function syncRead(cb){
     var c=syncCfg(); if(!c) return cb("no sync configured");
@@ -1671,7 +1708,7 @@
       url=c.url; if(c.key) opts.headers["Authorization"]="Bearer "+c.key;
     }
     fetch(url,opts).then(function(r){
-      if(!r.ok) throw new Error("HTTP "+r.status);
+      if(!r.ok) return r.text().then(function(t){ throw new Error(explain(r.status,t)); });
       return r.json();
     }).then(function(j){
       var data = (c.kind==="supabase") ? (Array.isArray(j)&&j[0]?j[0].data:null)
@@ -1695,7 +1732,7 @@
       opts.body=JSON.stringify(store);
     }
     fetch(url,opts).then(function(r){
-      if(!r.ok) throw new Error("HTTP "+r.status);
+      if(!r.ok) return r.text().then(function(t){ throw new Error(explain(r.status,t)); });
       cb(null);
     }).catch(function(e){ cb(e.message||String(e)); });
   }
@@ -1709,8 +1746,18 @@
       merged.t=Date.now();
       adoptStore(merged);
       syncWrite(S,function(err2){
-        if(err2){ flag(false,"Pulled, but couldn't push: "+err2); return; }
-        flag(true,"Synced · "+stamp()+" · "+S.history.length+" sessions");
+        if(err2){
+        flag(false,"Pulled, but couldn't push");
+        if(!quiet) tellBox("Reading works, writing doesn't", err2+
+          "\n\nIn Supabase, open the SQL editor and run:\n\n"+
+          "alter table public.leagues enable row level security;\n\n"+
+          "create policy \"league read\" on public.leagues\n  for select to anon using (true);\n\n"+
+          "create policy \"league write\" on public.leagues\n  for insert to anon with check (true);\n\n"+
+          "create policy \"league update\" on public.leagues\n  for update to anon using (true) with check (true);");
+        return;
+      }
+        flag(true,"Synced · "+stamp()+" · "+S.history.length+(S.history.length===1?" session":" sessions")+
+          (!S.sync&&builtinReady()?" · built-in league":""));
       });
     });
   }
@@ -1718,12 +1765,14 @@
   el("btn-sync").addEventListener("click",function(){ doSync(false); });
 
   el("btn-syncset").addEventListener("click",function(){
-    var c=syncCfg()||{kind:"supabase",url:"",key:"",table:"leagues",league:"the-field"};
+    var c=S.sync||syncCfg()||{kind:"supabase",url:"",key:"",table:"leagues",league:"the-field"};
+    var usingBuiltin=!S.sync && builtinReady();
     var bg=document.createElement("div"); bg.className="modal-bg";
     bg.innerHTML='<div class="modal" role="dialog" aria-modal="true" style="max-width:520px">'+
       '<h4>Sync setup</h4>'+
-      '<p>Point every device at the same place and they stay in step. Sessions merge by id, '+
-      'so two people can record different nights and nothing is lost.</p>'+
+      '<p>'+(usingBuiltin
+        ? 'This page already has a league built in, so any device that opens it is synced with no setup. Change these only to point somewhere else.'
+        : 'Point every device at the same place and they stay in step. Sessions merge by id, so two people can record different nights and nothing is lost.')+'</p>'+
       '<label class="f" for="sy-kind">Where</label>'+
       '<select id="sy-kind"><option value="supabase">Supabase table</option>'+
       '<option value="url">Plain JSON endpoint (GET + PUT)</option></select>'+
@@ -1740,6 +1789,7 @@
       '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13.5px">'+
       '<input type="checkbox" id="sy-auto" style="width:auto"> Sync automatically when the page opens</label>'+
       '<div class="acts"><button class="btn quiet" id="sy-cancel">Cancel</button>'+
+      (builtinReady()?'<button class="btn quiet" id="sy-reset">Use built-in</button>':'')+
       '<button class="btn ghost" id="sy-off">Turn off</button>'+
       '<button class="btn" id="sy-save">Save</button></div></div>';
     document.body.appendChild(bg);
@@ -1756,9 +1806,13 @@
     bg.querySelector("#sy-cancel").addEventListener("click",close);
     bg.addEventListener("click",function(e){ if(e.target===bg) close(); });
     bg.querySelector("#sy-off").addEventListener("click",function(){
-      S.sync=null; close(); save(); flag(true,"Sync turned off — saving to this device only");
+      S.sync=null; S.syncOff=true; close(); save(); flag(true,"Sync off on this device — saving locally only");
+    });
+    if(bg.querySelector("#sy-reset")) bg.querySelector("#sy-reset").addEventListener("click",function(){
+      S.sync=null; S.syncOff=false; close(); save(); doSync(false);
     });
     bg.querySelector("#sy-save").addEventListener("click",function(){
+      S.syncOff=false;
       S.sync={
         kind:bg.querySelector("#sy-kind").value,
         url:bg.querySelector("#sy-url").value.trim(),
@@ -1797,7 +1851,7 @@
                      {label:"Merge",value:1}],
             done:function(v){
               if(!v) return;
-              if(v===1){ adoptStore(mergeStores(S,o)); flag(true,"Merged - "+S.history.length+" sessions"); }
+              if(v===1){ adoptStore(mergeStores(S,o)); flag(true,"Merged - "+S.history.length+(S.history.length===1?" session":" sessions")); }
               else { adoptStore(o); flag(true,"Backup restored"); }
             }});
         }catch(e){ flag(false,"That file isn't a league backup"); }
@@ -1823,7 +1877,9 @@
   migrateGlicko();
   migrateCounting();
   if(!el("s-date").value) el("s-date").value=new Date().toISOString().slice(0,10);
-  if(S.sync&&S.sync.auto) setTimeout(function(){ doSync(true); },300);
+  var boot=syncCfg();
+  if(boot&&boot.auto) setTimeout(function(){ doSync(true); },300);
+  else if(boot) flag(true,"Sync ready — tap Sync now");
   modeDefaults();
   el("mex-wrap").style.display = el("s-format").value==="mexicano" ? "" : "none";
   setView(S.live?"session":(S.players.length?"session":"players"));
