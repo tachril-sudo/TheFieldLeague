@@ -220,6 +220,8 @@
     <span class="dot" id="save-dot"></span>
     <span class="msg" id="save-msg">Loading…</span>
     <span class="sp"></span>
+    <button id="btn-sync">Sync now</button>
+    <button id="btn-syncset">Sync setup</button>
     <button id="btn-export">Export backup</button>
     <button id="btn-import">Import</button>
     <button id="btn-wipe">Erase all</button>
@@ -821,7 +823,7 @@
       '<div style="height:10px"></div>'+
       '<label class="f" for="ed-elo">Rating — only change this to correct a mistake</label>'+
       '<input type="number" id="ed-elo" min="800" max="2400" step="1">'+
-      '<p style="margin-top:14px">Renaming is safe. Past sessions keep the name recorded at the time.</p>'+
+      '<p style="margin-top:14px">Renaming is safe. A rating change here becomes the player&rsquo;s <b>starting</b> rating and the whole history replays from it.</p>'+
       '<div class="acts"><button class="btn quiet" id="ed-cancel">Cancel</button>'+
       '<button class="btn" id="ed-save">Save</button></div></div>';
     document.body.appendChild(bg);
@@ -839,9 +841,13 @@
       }
       p.name=n;
       p.gender=bg.querySelector("#ed-gender").value;
+      p.t=Date.now();
       var e=parseFloat(bg.querySelector("#ed-elo").value);
-      if(!isNaN(e)&&e>=800&&e<=2400){ p.elo=e; p.peak=Math.max(p.peak||e,e); }
-      close(); save(); render();
+      var reseed=false;
+      if(!isNaN(e)&&e>=800&&e<=2400&&Math.round(e)!==Math.round(p.elo)){ p.seed=e; reseed=true; }
+      close();
+      if(reseed) recomputeAll();
+      save(); render();
     });
     bg.querySelector("#ed-name").focus();
   }
@@ -1221,7 +1227,7 @@
       return '<div class="selog" data-s="'+x.id+'" aria-expanded="'+(S.seOpen===x.id?"true":"false")+'">'+
         '<span class="dt">'+esc(x.date)+'</span>'+
         '<span class="meta">'+(x.format==="mexicano"?"Mexicano":"Americano")+' · '+M.blurb(x.target)+
-          ' · '+x.players+' players · '+x.rounds+' rounds</span>'+
+          ' · '+x.players+' players · '+(x.rounds_n||(x.rounds&&x.rounds.length)||0)+' rounds</span>'+
         '<span class="pod"><b>'+pod+'</b></span></div>';
     }).join("");
     el("se-list").querySelectorAll(".selog").forEach(function(row){
@@ -1317,7 +1323,7 @@
     }
     var seed=parseFloat(el("np-seed").value)||START_ELO;
     S.players.push({id:uid(),name:n,gender:el("np-gender").value,elo:seed,peak:seed,seed:seed,
-      rd:RD_START,vol:VOL_START,matches:0,mp:{},ms:{},msp:{},md:{}});
+      rd:RD_START,vol:VOL_START,matches:0,t:Date.now(),mp:{},ms:{},msp:{},md:{}});
     el("np-name").value="";
     save(); render();
   });
@@ -1433,29 +1439,50 @@
     } else commitSession(scored,k);
   });
 
-  function commitSession(scored,k){
-    var live=S.live;
+  // A session record is the raw truth: who was there, what was played, what the
+  // scores were. Ratings and month points are DERIVED from it, so any set of
+  // session records can be replayed from scratch — which is what makes merging
+  // two devices safe.
+  function buildRecord(live){
+    return {
+      id: live.recId || uid(),
+      date: live.date, format: live.format, mode: live.mode||"fixedpts",
+      mexPair: live.mexPair||"balanced",
+      target: live.target, courts: live.courts,
+      attendees: live.attendees.slice(),
+      rounds: live.rounds.map(function(rd){
+        return {courts: rd.courts.map(function(c){
+          return {a:c.a.slice(), b:c.b.slice(), sa:c.sa, sb:c.sb};
+        }), sitting:(rd.sitting||[]).slice()};
+      })
+    };
+  }
+
+  // Apply one session record to the current player state. Returns the summary
+  // that gets stored alongside the record for the audit views.
+  function applyRecord(rec){
+    var k=monthKey(rec.date);
     if(!S.months[k]) S.months[k]={closed:false,podium:null};
 
-    // 1. one rating period: every match judged against tonight's starting ratings
+    var scored=[];
+    rec.rounds.forEach(function(rd){
+      rd.courts.forEach(function(c){ if(c.sa!==null&&c.sb!==null) scored.push(c); });
+    });
+
     var snapshot={};
     S.players.forEach(function(p){ snapshot[p.id]={elo:p.elo, rd:rdOf(p), vol:volOf(p)}; });
 
-    var bucket={};           // playerId -> [glicko results]
-    var workings=[];
+    var bucket={}, workings=[];
     scored.forEach(function(c){
-      var d=matchDetail(c.a,c.b,c.sa,c.sb,live.target);
+      var d=matchDetail(c.a,c.b,c.sa,c.sb,rec.target);
       if(!d) return;
-      var pairs=[[c.a,c.b,c.sa,c.sb],[c.b,c.a,c.sb,c.sa]];
       var perPlayer={};
-      pairs.forEach(function(x){
+      [[c.a,c.b,c.sa,c.sb],[c.b,c.a,c.sb,c.sa]].forEach(function(x){
         var team=x[0], opp=x[1], mine=x[2], theirs=x[3];
         team.forEach(function(id,idx){
-          var r=matchResult(id, team[1-idx], opp, mine, theirs, live.target);
+          var r=matchResult(id, team[1-idx], opp, mine, theirs, rec.target);
           if(!r) return;
-          bucket[id]=bucket[id]||[];
-          bucket[id].push(r);
-          perPlayer[id]=r;
+          bucket[id]=bucket[id]||[]; bucket[id].push(r); perPlayer[id]=r;
         });
       });
       workings.push({
@@ -1466,63 +1493,81 @@
     });
 
     var results={};
-    S.players.forEach(function(p){
-      var out=glicko(p, bucket[p.id]||[]);
-      results[p.id]=out;
-    });
-    var deltas={};
-    Object.keys(results).forEach(function(id){ deltas[id]=results[id].elo-snapshot[id].elo; });
-    var perPlayerMatches={};
+    S.players.forEach(function(p){ results[p.id]=glicko(p, bucket[p.id]||[]); });
+    var matchesPlayed={};
     scored.forEach(function(c){
-      c.a.concat(c.b).forEach(function(id){ perPlayerMatches[id]=(perPlayerMatches[id]||0)+1; });
+      c.a.concat(c.b).forEach(function(id){ matchesPlayed[id]=(matchesPlayed[id]||0)+1; });
     });
 
-    // 2. session finishing order -> monthly points
-    var t=sessionTotals(live);
-    var ranked=live.attendees.filter(function(id){ return t[id].rounds>0; })
+    var t=sessionTotals({attendees:rec.attendees, rounds:rec.rounds});
+    var ranked=rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; })
       .map(function(id){ return {id:id,share:t[id].share,wins:t[id].wins,diff:t[id].diff}; })
-      .sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff); });
+      .sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff)
+                                  ||(byId(b.id)?byId(b.id).elo:0)-(byId(a.id)?byId(a.id).elo:0); });
 
     ranked.forEach(function(r,i){
       var p=byId(r.id); if(!p) return;
       ensureMonth(p,k);
       var got=(i<SESSION_POINTS.length? SESSION_POINTS[i] : 1);
-      p.mp[k]+= got;
-      p.msp[k].push(got);
-      p.ms[k]+= 1;
+      p.mp[k]+=got; p.msp[k].push(got); p.ms[k]+=1;
     });
     S.players.forEach(function(p){
       var out=results[p.id]; if(!out) return;
       ensureMonth(p,k);
+      var before=snapshot[p.id].elo;
       p.elo=out.elo; p.rd=out.rd; p.vol=out.vol;
-      if(perPlayerMatches[p.id]){
-        p.matches=(p.matches||0)+perPlayerMatches[p.id];
+      if(matchesPlayed[p.id]){
+        p.matches=(p.matches||0)+matchesPlayed[p.id];
         p.peak=Math.max(p.peak||START_ELO,p.elo);
       }
       if(!p.md) p.md={};
-      if(deltas[p.id]) p.md[k]=(p.md[k]||0)+deltas[p.id];
+      var dl=p.elo-before;
+      if(dl) p.md[k]=(p.md[k]||0)+dl;
     });
 
-    S.history.push({
-      id:uid(), date:live.date, format:live.format, mode:live.mode||"fixedpts",
-      target:live.target, courts:live.courts, month:k,
-      players:live.attendees.length, rounds:live.rounds.length,
+    return {
+      month:k, players:rec.attendees.length, rounds:rec.rounds.length,
       table:ranked.map(function(r,i){
         return {name:nameOf(r.id), id:r.id, share:r.share, wins:r.wins, diff:r.diff,
                 pts:t[r.id].pts, against:t[r.id].against, played:t[r.id].rounds,
                 monthPts:(i<SESSION_POINTS.length?SESSION_POINTS[i]:1),
                 before:snapshot[r.id].elo, after:results[r.id].elo,
                 rdBefore:snapshot[r.id].rd, rdAfter:results[r.id].rd,
-                delta:(deltas[r.id]||0)};
+                delta:results[r.id].elo-snapshot[r.id].elo};
       }),
-      workings:workings,
-      damp:dampFactor(live.target)
+      workings:workings, damp:dampFactor(rec.target)
+    };
+  }
+
+  // Wipe every derived number and replay the whole history in date order.
+  function recomputeAll(){
+    S.players.forEach(function(p){
+      var seed=(p.seed!==undefined?p.seed:START_ELO);
+      p.elo=seed; p.peak=seed; p.rd=RD_START; p.vol=VOL_START; p.matches=0;
+      p.mp={}; p.ms={}; p.msp={}; p.md={};
     });
+    (S.history||[]).sort(function(a,b){
+      return a.date===b.date ? (a.id<b.id?-1:1) : (a.date<b.date?-1:1);
+    }).forEach(function(h){
+      if(!h.rounds){ return; }          // pre-refactor record, nothing to replay
+      var sum=applyRecord(h);
+      h.month=sum.month; h.players=sum.players; h.rounds_n=sum.rounds;
+      h.table=sum.table; h.workings=sum.workings; h.damp=sum.damp;
+    });
+  }
+
+  function commitSession(scored,k){
+    var live=S.live;
+    var rec=buildRecord(live);
+    S.history.push(rec);
+    recomputeAll();
     S.live=null;
-    S.monthView=k;
+    S.monthView=monthKey(rec.date);
+    S.t=Date.now();
     save();
     setView("month");
     tellBox("Session recorded","Ratings updated and monthly points awarded.");
+    if(S.sync) doSync(true);
   }
 
   el("mo-pick").addEventListener("change",function(e){ S.monthView=e.target.value; renderMonth(); });
@@ -1545,7 +1590,187 @@
     });
   });
 
+  /* ---------------- merging two devices ---------------- */
+  // Sessions are the only source of truth, so merging is a union of rosters and
+  // a union of session records, then a full replay. No field-level conflicts.
+  function mergeStores(local, remote){
+    var out={v:1, players:[], months:{}, history:[], live:local.live||null,
+             sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0)};
+
+    var byIdMap={}, byName={};
+    function addPlayer(p, fromRemote){
+      var existing=byIdMap[p.id];
+      if(!existing){
+        // same human added separately on two devices ends up with two ids
+        var dup=byName[p.name.toLowerCase()];
+        if(dup){ byIdMap[p.id]=dup; return; }
+        var copy=JSON.parse(JSON.stringify(p));
+        byIdMap[p.id]=copy; byName[p.name.toLowerCase()]=copy;
+        out.players.push(copy);
+        return;
+      }
+      // keep whichever record was edited more recently
+      if((p.t||0) > (existing.t||0)){
+        existing.name=p.name; existing.gender=p.gender;
+        if(p.seed!==undefined) existing.seed=p.seed;
+        existing.t=p.t;
+      }
+    }
+    (local.players||[]).forEach(function(p){ addPlayer(p,false); });
+    (remote.players||[]).forEach(function(p){ addPlayer(p,true); });
+
+    var seen={};
+    function addSession(h){
+      if(!h||!h.id) return;
+      if(seen[h.id]) return;
+      seen[h.id]=1;
+      var copy=JSON.parse(JSON.stringify(h));
+      // rewrite any ids that got de-duplicated by name
+      function fix(id){ return byIdMap[id] ? byIdMap[id].id : id; }
+      copy.attendees=(copy.attendees||[]).map(fix);
+      (copy.rounds||[]).forEach(function(rd){
+        (rd.courts||[]).forEach(function(c){ c.a=c.a.map(fix); c.b=c.b.map(fix); });
+        rd.sitting=(rd.sitting||[]).map(fix);
+      });
+      out.history.push(copy);
+    }
+    (local.history||[]).forEach(addSession);
+    (remote.history||[]).forEach(addSession);
+
+    Object.keys(local.months||{}).forEach(function(k){ out.months[k]=JSON.parse(JSON.stringify(local.months[k])); });
+    Object.keys(remote.months||{}).forEach(function(k){
+      var r=remote.months[k], l=out.months[k];
+      if(!l){ out.months[k]=JSON.parse(JSON.stringify(r)); return; }
+      if(r.closed && !l.closed){ out.months[k]=JSON.parse(JSON.stringify(r)); }
+    });
+    return out;
+  }
+
+  function adoptStore(next){
+    S=next;
+    migrateGlicko(); migrateCounting();
+    recomputeAll();
+    save(); render();
+  }
+
   /* ---------------- backup ---------------- */
+  /* ---------------- cloud sync ---------------- */
+  // Any endpoint that can store and return one JSON blob works. Two presets:
+  // a Supabase table row, or a plain GET/PUT URL (jsonbin, a Worker, whatever).
+  function syncCfg(){ return S.sync||null; }
+
+  function syncRead(cb){
+    var c=syncCfg(); if(!c) return cb("no sync configured");
+    var url, opts={method:"GET", headers:{}};
+    if(c.kind==="supabase"){
+      url=c.url.replace(/\/$/,"")+"/rest/v1/"+encodeURIComponent(c.table)+
+          "?id=eq."+encodeURIComponent(c.league)+"&select=data";
+      opts.headers["apikey"]=c.key;
+      opts.headers["Authorization"]="Bearer "+c.key;
+    } else {
+      url=c.url; if(c.key) opts.headers["Authorization"]="Bearer "+c.key;
+    }
+    fetch(url,opts).then(function(r){
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      return r.json();
+    }).then(function(j){
+      var data = (c.kind==="supabase") ? (Array.isArray(j)&&j[0]?j[0].data:null)
+                                       : (j&&j.record ? j.record : j);
+      cb(null, data);
+    }).catch(function(e){ cb(e.message||String(e)); });
+  }
+
+  function syncWrite(store, cb){
+    var c=syncCfg(); if(!c) return cb("no sync configured");
+    var url, opts={method:"PUT", headers:{"Content-Type":"application/json"}};
+    if(c.kind==="supabase"){
+      url=c.url.replace(/\/$/,"")+"/rest/v1/"+encodeURIComponent(c.table);
+      opts.method="POST";
+      opts.headers["apikey"]=c.key;
+      opts.headers["Authorization"]="Bearer "+c.key;
+      opts.headers["Prefer"]="resolution=merge-duplicates";
+      opts.body=JSON.stringify([{id:c.league, data:store, updated_at:new Date().toISOString()}]);
+    } else {
+      if(c.key) opts.headers["Authorization"]="Bearer "+c.key;
+      opts.body=JSON.stringify(store);
+    }
+    fetch(url,opts).then(function(r){
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      cb(null);
+    }).catch(function(e){ cb(e.message||String(e)); });
+  }
+
+  function doSync(quiet){
+    if(!syncCfg()){ if(!quiet) tellBox("Sync not set up","Tap Sync setup and paste the details for wherever the league lives."); return; }
+    flag(true,"Syncing…");
+    syncRead(function(err,remote){
+      if(err){ flag(false,"Sync failed: "+err); if(!quiet) tellBox("Couldn't reach the league", err); return; }
+      var merged = remote ? mergeStores(S, remote) : JSON.parse(JSON.stringify(S));
+      merged.t=Date.now();
+      adoptStore(merged);
+      syncWrite(S,function(err2){
+        if(err2){ flag(false,"Pulled, but couldn't push: "+err2); return; }
+        flag(true,"Synced · "+stamp()+" · "+S.history.length+" sessions");
+      });
+    });
+  }
+
+  el("btn-sync").addEventListener("click",function(){ doSync(false); });
+
+  el("btn-syncset").addEventListener("click",function(){
+    var c=syncCfg()||{kind:"supabase",url:"",key:"",table:"leagues",league:"the-field"};
+    var bg=document.createElement("div"); bg.className="modal-bg";
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true" style="max-width:520px">'+
+      '<h4>Sync setup</h4>'+
+      '<p>Point every device at the same place and they stay in step. Sessions merge by id, '+
+      'so two people can record different nights and nothing is lost.</p>'+
+      '<label class="f" for="sy-kind">Where</label>'+
+      '<select id="sy-kind"><option value="supabase">Supabase table</option>'+
+      '<option value="url">Plain JSON endpoint (GET + PUT)</option></select>'+
+      '<div style="height:10px"></div>'+
+      '<label class="f" for="sy-url">URL</label><input type="text" id="sy-url" placeholder="https://xxxx.supabase.co">'+
+      '<div style="height:10px"></div>'+
+      '<label class="f" for="sy-key">Key</label><input type="text" id="sy-key" placeholder="anon public key">'+
+      '<div id="sy-sb">'+
+      '<div style="height:10px"></div>'+
+      '<label class="f" for="sy-table">Table</label><input type="text" id="sy-table" placeholder="leagues">'+
+      '<div style="height:10px"></div>'+
+      '<label class="f" for="sy-league">League id</label><input type="text" id="sy-league" placeholder="the-field">'+
+      '</div>'+
+      '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13.5px">'+
+      '<input type="checkbox" id="sy-auto" style="width:auto"> Sync automatically when the page opens</label>'+
+      '<div class="acts"><button class="btn quiet" id="sy-cancel">Cancel</button>'+
+      '<button class="btn ghost" id="sy-off">Turn off</button>'+
+      '<button class="btn" id="sy-save">Save</button></div></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#sy-kind").value=c.kind;
+    bg.querySelector("#sy-url").value=c.url||"";
+    bg.querySelector("#sy-key").value=c.key||"";
+    bg.querySelector("#sy-table").value=c.table||"leagues";
+    bg.querySelector("#sy-league").value=c.league||"the-field";
+    bg.querySelector("#sy-auto").checked=!!c.auto;
+    function toggle(){ bg.querySelector("#sy-sb").style.display = bg.querySelector("#sy-kind").value==="supabase"?"":"none"; }
+    toggle();
+    bg.querySelector("#sy-kind").addEventListener("change",toggle);
+    function close(){ if(bg.parentNode) document.body.removeChild(bg); }
+    bg.querySelector("#sy-cancel").addEventListener("click",close);
+    bg.addEventListener("click",function(e){ if(e.target===bg) close(); });
+    bg.querySelector("#sy-off").addEventListener("click",function(){
+      S.sync=null; close(); save(); flag(true,"Sync turned off — saving to this device only");
+    });
+    bg.querySelector("#sy-save").addEventListener("click",function(){
+      S.sync={
+        kind:bg.querySelector("#sy-kind").value,
+        url:bg.querySelector("#sy-url").value.trim(),
+        key:bg.querySelector("#sy-key").value.trim(),
+        table:bg.querySelector("#sy-table").value.trim()||"leagues",
+        league:bg.querySelector("#sy-league").value.trim()||"the-field",
+        auto:bg.querySelector("#sy-auto").checked
+      };
+      close(); save(); doSync(false);
+    });
+  });
+
   el("btn-export").addEventListener("click",function(){
     var blob=new Blob([JSON.stringify(S,null,2)],{type:"application/json"});
     var a=document.createElement("a");
@@ -1564,10 +1789,17 @@
         try{
           var o=JSON.parse(fr.result);
           if(!o||o.v!==1||!Array.isArray(o.players)) throw new Error("bad file");
-          confirmBox("Restore backup?","Everything currently on this device will be replaced.","Restore",function(){
-            S=o; if(!S.history) S.history=[];
-            save(); render(); flag(true,"Backup restored");
-          });
+          dialog({title:"Import backup",
+            body:"Merge keeps everything on this device and adds anything the file has that is missing. "+
+                 "Replace throws away what is here.",
+            buttons:[{label:"Cancel",kind:"quiet",value:0},
+                     {label:"Replace",kind:"ghost",value:2},
+                     {label:"Merge",value:1}],
+            done:function(v){
+              if(!v) return;
+              if(v===1){ adoptStore(mergeStores(S,o)); flag(true,"Merged - "+S.history.length+" sessions"); }
+              else { adoptStore(o); flag(true,"Backup restored"); }
+            }});
         }catch(e){ flag(false,"That file isn't a league backup"); }
       };
       fr.readAsText(f);
@@ -1591,12 +1823,14 @@
   migrateGlicko();
   migrateCounting();
   if(!el("s-date").value) el("s-date").value=new Date().toISOString().slice(0,10);
+  if(S.sync&&S.sync.auto) setTimeout(function(){ doSync(true); },300);
   modeDefaults();
   el("mex-wrap").style.display = el("s-format").value==="mexicano" ? "" : "none";
   setView(S.live?"session":(S.players.length?"session":"players"));
 
   // exposed for testing
   window.__league={get S(){return S}, set S(v){S=v}, glicko:glicko, matchDetail:matchDetail, makeRound:makeRound,
+                   mergeStores:mergeStores, adoptStore:adoptStore, recomputeAll:recomputeAll,
                    sessionTotals:sessionTotals, render:render, setView:setView, byId:byId};
 })();
 </script>
