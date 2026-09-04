@@ -384,6 +384,11 @@
       <div class="card-f">10-8-6-5-4-3-2-1 per session by finishing position, 1 for everyone else. <b>Only your best 3 sessions count</b>; total is the tiebreak, so an extra session can still win it. Greyed rows have not reached 3 sessions.</div>
     </div>
     <div class="card">
+      <div class="card-h">Most improved <small id="mi-sub"></small></div>
+      <div id="mi-body"></div>
+      <div class="card-f">Rating at the first session of the month against the last. Players still <b>Settling</b> at the start of the month are listed separately — a new rating swinging into place is the system correcting itself, not improvement.</div>
+    </div>
+    <div class="card">
       <div class="card-h">Close the month</div>
       <div class="card-b">
         <p style="font-size:14px;color:var(--stone-2)">Locks the podium, files it under Past months, and clears monthly points. Ratings and match history are untouched.</p>
@@ -920,7 +925,10 @@
       var n=bg.querySelector("#ed-name").value.trim();
       if(!n){ return; }
       if(S.players.some(function(x){return x.id!==p.id && x.name.toLowerCase()===n.toLowerCase()})){
-        close(); tellBox("Name already taken","There's already a player called "+n+"."); return;
+        close();
+        tellBox("There's already a "+n,
+          "Names have to be unique. Add a surname initial or a nickname to tell them apart.");
+        return;
       }
       p.name=n;
       p.gender=bg.querySelector("#ed-gender").value;
@@ -985,7 +993,7 @@
       m.sessions++; m.pts+=x.monthPts; m.scores.push(x.monthPts); m.last=x.after; m.best=Math.min(m.best,x.pos);
     });
     var mk=Object.keys(months).sort().reverse();
-    var mtab='<table class="wk"><thead><tr><th class="l">Month</th><th>Sessions</th><th>Best 3</th><th>Total</th><th>Best finish</th><th>Rating start</th><th>Rating end</th><th>Δ</th><th>Podium</th></tr></thead><tbody>'+
+    var mtab='<table class="wk"><thead><tr><th class="l">Month</th><th>Sessions</th><th>Best 3</th><th>Total</th><th>Best finish</th><th>Rating start</th><th>Rating end</th><th>Δ</th><th>Podium</th><th>MIP</th></tr></thead><tbody>'+
       mk.map(function(k){
         var m=months[k], d=m.last-m.first;
         var pod=(S.months[k]&&S.months[k].podium)||[];
@@ -994,7 +1002,8 @@
         return '<tr><td class="l">'+monthName(k)+'</td><td>'+m.sessions+'</td><td>'+b3+'</td><td>'+m.pts+'</td>'+
           '<td>'+m.best+'</td><td>'+Math.round(m.first)+'</td><td>'+Math.round(m.last)+'</td>'+
           '<td class="'+(d>0?"up":(d<0?"dn":""))+'">'+fmtSigned(d)+'</td>'+
-          '<td>'+(place>=0?["1st","2nd","3rd"][place]:(m.sessions>=MIN_SESSIONS?"–":"n/q"))+'</td></tr>';
+          '<td>'+(place>=0?["1st","2nd","3rd"][place]:(m.sessions>=MIN_SESSIONS?"–":"n/q"))+'</td>'+
+          '<td>'+((S.months[k]&&S.months[k].improved&&S.months[k].improved.name===p.name)?"★":"–")+'</td></tr>';
       }).join("")+'</tbody></table>';
 
     return '<div class="pdetail">'+
@@ -1268,6 +1277,36 @@
   }
 
   /* --- month --- */
+  // Rating movement across a month: first session's starting rating to the last
+  // session's finishing rating, for the sessions they actually played.
+  function monthMovement(k){
+    var first={}, last={}, count={};
+    (S.history||[]).filter(function(h){ return h.month===k; })
+      .slice().sort(function(a,b){ return a.date<b.date?-1:1; })
+      .forEach(function(h){
+        (h.table||[]).forEach(function(r){
+          if(!first[r.id]) first[r.id]={elo:r.before, rd:r.rdBefore};
+          last[r.id]={elo:r.after, rd:r.rdAfter};
+          count[r.id]=(count[r.id]||0)+1;
+        });
+      });
+    return Object.keys(first).map(function(id){
+      var p=byId(id); if(!p) return null;
+      return {p:p, id:id, from:first[id].elo, to:last[id].elo,
+              gain:last[id].elo-first[id].elo,
+              rdStart:(first[id].rd===undefined?RD_START:first[id].rd),
+              sessions:count[id]};
+    }).filter(Boolean).sort(function(a,b){ return b.gain-a.gain; });
+  }
+  // A newcomer's rating swinging into place is the system correcting itself,
+  // not improvement. Only players whose rating was already settled qualify.
+  function improvedTable(k){
+    var all=monthMovement(k);
+    return {
+      eligible: all.filter(function(x){ return x.sessions>=MIN_SESSIONS && x.rdStart<=RD_SETTLED; }),
+      settling: all.filter(function(x){ return x.sessions>=MIN_SESSIONS && x.rdStart>RD_SETTLED; })
+    };
+  }
   function activeMonths(){
     var set={};
     S.players.forEach(function(p){
@@ -1325,6 +1364,27 @@
       }).join("");
     }
     el("mo-sub").textContent=(closed?"closed":"open")+" · "+MIN_SESSIONS+" sessions to qualify";
+
+    var imp=improvedTable(k);
+    var mb=el("mi-body");
+    function impRows(list,dim){
+      return list.map(function(x,i){
+        var cls=dim?"dim":(i===0?"p1":(i<3?"p2":""));
+        return '<tr class="'+cls+'"><td>'+(dim?"–":(i+1))+'</td>'+
+          '<td>'+esc(x.p.name)+tag(x.p)+(dim?'<span class="prov">settling</span>':"")+'</td>'+
+          '<td>'+x.sessions+'</td><td>'+Math.round(x.from)+'</td><td>'+Math.round(x.to)+'</td>'+
+          '<td class="'+(x.gain>0?"up":(x.gain<0?"dn":""))+'">'+(x.gain>0?"+":"")+Math.round(x.gain)+'</td></tr>';
+      }).join("");
+    }
+    if(!imp.eligible.length && !imp.settling.length){
+      mb.innerHTML='<div class="empty">Nothing to compare yet this month.</div>';
+      el("mi-sub").textContent="";
+    } else {
+      mb.innerHTML='<table><thead><tr><th></th><th>Player</th><th>Sess</th><th>From</th><th>To</th><th>Gain</th></tr></thead><tbody>'+
+        impRows(imp.eligible.slice(0,8),false)+impRows(imp.settling.slice(0,4),true)+'</tbody></table>';
+      var top=imp.eligible[0];
+      el("mi-sub").textContent = top ? (top.gain>0? "+"+Math.round(top.gain)+" · "+top.p.name : "nobody has gained yet") : "no one qualified";
+    }
   }
 
   /* --- ratings --- */
@@ -1445,9 +1505,12 @@
     el("hof-body").innerHTML=keys.map(function(k){
       var pod=S.months[k].podium||[];
       var medals=["1st","2nd","3rd"];
+      var mi=S.months[k].improved;
       return '<div class="hof"><span class="mo">'+monthName(k)+'</span><span class="names">'+
         (pod.length? pod.map(function(x,i){ return '<b>'+medals[i]+'</b> '+esc(x.name)+' ('+x.pts+' pts)'; }).join(" · ")
                    : "no one qualified")+
+        (mi? '<br><span style="color:var(--green);font-weight:700">Most improved</span> '+
+             esc(mi.name)+' +'+mi.gain+' ('+mi.from+' → '+mi.to+')' : "")+
         '</span></div>';
     }).join("");
   }
@@ -1460,8 +1523,15 @@
   el("btn-addplayer").addEventListener("click",function(){
     var n=el("np-name").value.trim();
     if(!n) return;
-    if(S.players.some(function(p){return p.name.toLowerCase()===n.toLowerCase()})){
-      tellBox("Name already taken","There's already a player called "+n+"."); return;
+    var clash=S.players.filter(function(p){return p.name.toLowerCase()===n.toLowerCase()})[0];
+    if(clash){
+      n=clash.name;
+      tellBox("There's already a "+n,
+        "Names have to be unique, because that's what tells two people apart everywhere in the app "+
+        "— the picker, the standings, and when two devices merge.\n\n"+
+        "Add something short to separate them: a surname initial (\""+n+" S.\"), "+
+        "or whatever people actually call them on court (\""+n+" Kecil\").");
+      return;
     }
     var seed=parseFloat(el("np-seed").value)||START_ELO;
     S.players.push({id:uid(),name:n,gender:el("np-gender").value,elo:seed,peak:seed,seed:seed,
@@ -1727,14 +1797,21 @@
     if(S.months[k]&&S.months[k].closed) return;
     var elig=S.players.filter(function(p){ ensureMonth(p,k); return p.ms[k]>=MIN_SESSIONS; })
       .sort(function(a,b){ return (best3(b,k)-best3(a,k))||(b.mp[k]-a.mp[k])||(b.elo-a.elo); });
+    var imp=improvedTable(k);
+    var mip=imp.eligible.filter(function(x){ return x.gain>0; })[0]||null;
     var body = elig.length
       ? "Podium:\n"+elig.slice(0,3).map(function(p,i){return (i+1)+". "+p.name+" — "+best3(p,k)+" pts from their best 3"}).join("\n")+
+        (mip? "\n\nMost improved: "+mip.p.name+"  +"+Math.round(mip.gain)+
+              " ("+Math.round(mip.from)+" → "+Math.round(mip.to)+")" : "")+
         "\n\nMonthly points reset. Ratings and history are untouched."
       : "Nobody reached "+MIN_SESSIONS+" sessions, so there is no podium.";
     confirmBox("Close "+monthName(k)+"?",body,"Close month",function(){
       if(!S.months[k]) S.months[k]={};
       S.months[k].closed=true;
       S.months[k].podium=elig.slice(0,3).map(function(p){ return {name:p.name,pts:best3(p,k),total:p.mp[k],elo:Math.round(p.elo)}; });
+      S.months[k].improved = mip ? {name:mip.p.name, gain:Math.round(mip.gain),
+                                    from:Math.round(mip.from), to:Math.round(mip.to),
+                                    sessions:mip.sessions} : null;
       S.monthView=null;
       save(); setView("hof");
     });
@@ -1743,7 +1820,9 @@
   /* ---------------- merging two devices ---------------- */
   // Sessions are the only source of truth, so merging is a union of rosters and
   // a union of session records, then a full replay. No field-level conflicts.
+  var mergedByName=[];
   function mergeStores(local, remote){
+    mergedByName=[];
     var out={v:1, players:[], months:{}, history:[], live:local.live||null,
              sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0)};
 
@@ -1753,7 +1832,7 @@
       if(!existing){
         // same human added separately on two devices ends up with two ids
         var dup=byName[p.name.toLowerCase()];
-        if(dup){ byIdMap[p.id]=dup; return; }
+        if(dup){ byIdMap[p.id]=dup; mergedByName.push(p.name); return; }
         var copy=JSON.parse(JSON.stringify(p));
         byIdMap[p.id]=copy; byName[p.name.toLowerCase()]=copy;
         out.players.push(copy);
@@ -1794,6 +1873,15 @@
       if(r.closed && !l.closed){ out.months[k]=JSON.parse(JSON.stringify(r)); }
     });
     return out;
+  }
+
+  function reportNameMerge(names){
+    var uniq=names.filter(function(n,i){ return names.indexOf(n)===i; });
+    tellBox("Matched by name",
+      "These were added separately on two devices and have been treated as the same person:\n\n"+
+      uniq.join(", ")+
+      "\n\nIf any of those are actually two different people, rename one of them on the Players tab "+
+      "and re-enter their sessions.");
   }
 
   function adoptStore(next){
@@ -1876,6 +1964,7 @@
     syncRead(function(err,remote){
       if(err){ flag(false,"Sync failed: "+err); if(!quiet) tellBox("Couldn't reach the league", err); return; }
       var merged = remote ? mergeStores(S, remote) : JSON.parse(JSON.stringify(S));
+      var mergedNames = remote ? mergedByName.slice() : [];
       merged.t=Date.now();
       adoptStore(merged);
       syncWrite(S,function(err2){
@@ -1891,6 +1980,7 @@
       }
         flag(true,"Synced · "+stamp()+" · "+S.history.length+(S.history.length===1?" session":" sessions")+
           (!S.sync&&builtinReady()?" · built-in league":""));
+        if(mergedNames.length && !quiet) reportNameMerge(mergedNames);
       });
     });
   }
@@ -1984,7 +2074,13 @@
                      {label:"Merge",value:1}],
             done:function(v){
               if(!v) return;
-              if(v===1){ adoptStore(mergeStores(S,o)); flag(true,"Merged - "+S.history.length+(S.history.length===1?" session":" sessions")); }
+              if(v===1){
+                var names=[];
+                var next=mergeStores(S,o); names=mergedByName.slice();
+                adoptStore(next);
+                flag(true,"Merged - "+S.history.length+(S.history.length===1?" session":" sessions"));
+                if(names.length) reportNameMerge(names);
+              }
               else { adoptStore(o); flag(true,"Backup restored"); }
             }});
         }catch(e){ flag(false,"That file isn't a league backup"); }
