@@ -453,6 +453,8 @@
         <div class="rsearch">
           <input type="search" id="pl-search" placeholder="Search the roster…" aria-label="Search players">
           <span class="n" id="pl-count"></span>
+          <label class="n" style="cursor:pointer;align-items:center;gap:6px;display:none">
+            <input type="checkbox" id="pl-archived" style="width:auto"> Show archived</label>
         </div>
         <div class="plist" id="pl-list"></div>
       </div>
@@ -532,7 +534,7 @@
     return BANDS[BANDS.length-1];
   }
 
-  var S={v:1,epoch:0,players:[],months:{},live:null,history:[]};
+  var S={v:1,epoch:0,players:[],months:{},live:null,history:[],removed:{}};
   var view="session";
 
   /* ---------------- storage ---------------- */
@@ -595,6 +597,11 @@
 
   /* ---------------- helpers ---------------- */
   function uid(){ return Math.random().toString(36).slice(2,9); }
+  // Someone who has played can't simply vanish — the session records name them.
+  // They are archived instead: hidden everywhere, history intact.
+  function activePlayers(){
+    return S.players.filter(function(p){ return !p.hidden; });
+  }
   function byId(id){ for(var i=0;i<S.players.length;i++) if(S.players[i].id===id) return S.players[i]; return null; }
   function nameOf(id){ var p=byId(id); return p?p.name:"?"; }
   function monthKey(d){ return (d||new Date().toISOString().slice(0,10)).slice(0,7); }
@@ -867,37 +874,49 @@
     if(!S.players.length){ host.innerHTML='<div class="empty">No players yet. Add the regulars first.</div>'; }
     else{
       var q=(S.playerQuery||"").trim().toLowerCase();
-      var list=S.players.slice().sort(function(a,b){return a.name.localeCompare(b.name)})
+      var pool=S.showArchived ? S.players.slice() : activePlayers();
+      var list=pool.sort(function(a,b){return (a.hidden?1:0)-(b.hidden?1:0) || a.name.localeCompare(b.name)})
         .filter(function(p){ return !q || p.name.toLowerCase().indexOf(q)>=0; });
       el("pl-count").textContent = q
-        ? list.length+" of "+S.players.length
-        : S.players.length+" player"+(S.players.length===1?"":"s");
+        ? list.length+" of "+pool.length
+        : pool.length+" player"+(pool.length===1?"":"s");
       if(!list.length){
         host.innerHTML='<div class="empty">Nobody matches "'+esc(q)+'".</div>';
       } else {
       host.innerHTML=list.map(function(p){
         var b=bandOf(p);
-        return '<div class="prow">'+
-          '<span class="nm">'+esc(p.name)+tag(p)+'</span>'+
+        return '<div class="prow"'+(p.hidden?' style="opacity:.55"':'')+'>'+
+          '<span class="nm">'+esc(p.name)+tag(p)+
+          (p.hidden?'<span class="prov">archived</span>':"")+'</span>'+
           '<span class="el"><span class="band '+b.css+'">'+b.name+'</span>'+
             '<b>'+Math.round(p.elo)+'</b> ±'+Math.round(rdOf(p))+
             ' · '+(p.matches||0)+' match'+((p.matches||0)===1?"":"es")+'</span>'+
           '<span class="acts">'+
             '<button data-open="'+p.id+'">History</button>'+
-            '<button data-edit="'+p.id+'">Edit</button>'+
-            '<button data-del="'+p.id+'">Remove</button>'+
+            (p.hidden ? '<button data-restore="'+p.id+'">Restore</button>'
+                      : '<button data-edit="'+p.id+'">Edit</button>'+
+                        '<button data-del="'+p.id+'">Remove</button>')+
           '</span></div>'+
           (S.playerOpen===p.id ? playerDetail(p) : "");
       }).join("");
       }
     }
-    el("pl-sub").textContent=S.players.length+" on the roster";
+    var nArch=S.players.length-activePlayers().length;
+    el("pl-sub").textContent=activePlayers().length+" on the roster"+(nArch?" · "+nArch+" archived":"");
+    var ar=el("pl-archived");
+    if(ar){ ar.checked=!!S.showArchived; ar.parentNode.style.display = nArch? "flex" : "none"; }
     var sb=el("pl-search");
     if(sb && sb.value!==(S.playerQuery||"")) sb.value=S.playerQuery||"";
     host.querySelectorAll("[data-open]").forEach(function(b){
       b.addEventListener("click",function(){
         S.playerOpen = (S.playerOpen===b.dataset.open) ? null : b.dataset.open;
         renderPlayers();
+      });
+    });
+    host.querySelectorAll("[data-restore]").forEach(function(b){
+      b.addEventListener("click",function(){
+        var p=byId(b.dataset.restore); if(!p) return;
+        p.hidden=false; p.t=Date.now(); save(); render();
       });
     });
     host.querySelectorAll("[data-edit]").forEach(function(b){
@@ -907,10 +926,25 @@
       b.addEventListener("click",function(){
         var p=byId(b.dataset.del);
         if(!p) return;
-        confirmBox("Remove "+p.name+"?",
-          "Their rating and match count go with them. Past sessions keep their name in the record.",
-          "Remove",function(){
-            S.players=S.players.filter(function(x){return x.id!==p.id});
+        if((p.matches||0)===0){
+          confirmBox("Remove "+p.name+"?",
+            "They have never played, so there is nothing to keep. They will be removed on every "+
+            "device the next time it syncs.","Remove",function(){
+              S.removed=S.removed||{};
+              S.removed[p.id]=Date.now();
+              S.players=S.players.filter(function(x){return x.id!==p.id});
+              if(S.playerOpen===p.id) S.playerOpen=null;
+              save(); render();
+            });
+          return;
+        }
+        confirmBox("Archive "+p.name+"?",
+          p.name+" has played "+p.matches+" matches, so those sessions still name them. "+
+          "Archiving takes them out of the roster, the session picker, the ratings and the "+
+          "monthly table, and leaves the history alone.\n\n"+
+          "Tick \"Show archived\" on the Players tab to bring them back.",
+          "Archive",function(){
+            p.hidden=true; p.t=Date.now();
             if(S.playerOpen===p.id) S.playerOpen=null;
             save(); render();
           });
@@ -1046,7 +1080,7 @@
     el("live-sub").textContent=live.courts+" courts · "+modeOf(live).blurb(live.target)+" · "+
       (live.attendees.length-outN)+" playing"+(outN?" · "+outN+" sat out":"");
     if(el("lv-date").value!==live.date) el("lv-date").value=live.date;
-    var avail=S.players.filter(function(p){ return live.attendees.indexOf(p.id)<0; })
+    var avail=activePlayers().filter(function(p){ return live.attendees.indexOf(p.id)<0; })
       .sort(function(a,b){return a.name.localeCompare(b.name)});
     el("lv-add").innerHTML = avail.length
       ? avail.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+'</option>'}).join("")
@@ -1207,7 +1241,7 @@
     } else {
       var sel=S.setupSel||{};
       var q=(S.attQuery||"").trim().toLowerCase();
-      var all=S.players.slice().sort(function(a,b){
+      var all=activePlayers().sort(function(a,b){
         var sa=sel[a.id]?0:1, sb=sel[b.id]?0:1;      // everyone selected floats to the top
         if(sa!==sb) return sa-sb;
         return a.name.localeCompare(b.name);
@@ -1278,7 +1312,7 @@
 
   function selectedIds(){
     var sel=S.setupSel||{};
-    return S.players.filter(function(p){return sel[p.id]}).map(function(p){return p.id});
+    return activePlayers().filter(function(p){return sel[p.id]}).map(function(p){return p.id});
   }
   function updateSetupHint(){
     var n=selectedIds().length, courts=parseInt(el("s-courts").value,10);
@@ -1404,7 +1438,7 @@
     el("close-mo-name").textContent=monthName(k);
     var closed=S.months[k]&&S.months[k].closed;
     el("btn-close-month").disabled=!!closed;
-    var rows=S.players.map(function(p){
+    var rows=activePlayers().map(function(p){
       ensureMonth(p,k);
       return {p:p,best:best3(p,k),pts:p.mp[k],sess:p.ms[k],delta:(p.md&&p.md[k])||0};
     }).filter(function(r){ return r.sess>0; })
@@ -1457,7 +1491,7 @@
 
   /* --- ratings --- */
   function renderRatings(){
-    var rows=S.players.slice().sort(function(a,b){return b.elo-a.elo});
+    var rows=activePlayers().sort(function(a,b){return b.elo-a.elo});
     if(!rows.length){ el("rt-body").innerHTML='<tr><td colspan="5"><div class="empty">No players yet.</div></td></tr>'; el("rt-cats").innerHTML=""; return; }
     el("rt-body").innerHTML=rows.map(function(p,i){
       var b=bandOf(p);
@@ -1627,6 +1661,9 @@
   }
 
   /* ---------------- actions ---------------- */
+  el("pl-archived").addEventListener("change",function(e){
+    S.showArchived=e.target.checked; renderPlayers();
+  });
   el("pl-search").addEventListener("input",function(e){
     S.playerQuery=e.target.value; renderPlayers();
   });
@@ -1906,7 +1943,7 @@
   el("btn-close-month").addEventListener("click",function(){
     var k=currentMonthKey();
     if(S.months[k]&&S.months[k].closed) return;
-    var elig=S.players.filter(function(p){ ensureMonth(p,k); return p.ms[k]>=MIN_SESSIONS; })
+    var elig=activePlayers().filter(function(p){ ensureMonth(p,k); return p.ms[k]>=MIN_SESSIONS; })
       .sort(function(a,b){ return (best3(b,k)-best3(a,k))||(b.mp[k]-a.mp[k])||(b.elo-a.elo); });
     var imp=improvedTable(k);
     var mip=imp.eligible.filter(function(x){ return x.gain>0; })[0]||null;
@@ -1944,10 +1981,18 @@
     if(re>le){ var rr=JSON.parse(JSON.stringify(remote)); rr.sync=local.sync||rr.sync; rr.live=null; return rr; }
     if(le>re){ return JSON.parse(JSON.stringify(local)); }
     var out={v:1, epoch:le, players:[], months:{}, history:[], live:local.live||null,
-             sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0)};
+             sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0),
+             removed:{}};
+    // union of tombstones — a removal on any device sticks everywhere
+    [local.removed||{}, remote.removed||{}].forEach(function(m){
+      Object.keys(m).forEach(function(id){
+        out.removed[id]=Math.max(out.removed[id]||0, m[id]||0);
+      });
+    });
 
     var byIdMap={}, byName={};
     function addPlayer(p, fromRemote){
+      if(out.removed[p.id]) return;              // deleted somewhere, stays deleted
       var existing=byIdMap[p.id];
       if(!existing){
         // same human added separately on two devices ends up with two ids
@@ -1961,6 +2006,7 @@
       // keep whichever record was edited more recently
       if((p.t||0) > (existing.t||0)){
         existing.name=p.name; existing.gender=p.gender;
+        existing.hidden=!!p.hidden;
         if(p.seed!==undefined) existing.seed=p.seed;
         existing.t=p.t;
       }
@@ -2237,7 +2283,8 @@
     return (x.epoch||0)+"|"+(x.players||[]).length+"|"+
       (x.history||[]).map(function(h){return h.id}).sort().join(",")+"|"+
       Object.keys(x.months||{}).map(function(k){return k+(x.months[k].closed?"C":"")}).sort().join(",")+"|"+
-      (x.players||[]).map(function(p){return p.name+p.gender+(p.seed||"")}).sort().join(",");
+      (x.players||[]).map(function(p){return p.name+p.gender+(p.seed||"")+(p.hidden?"H":"")}).sort().join(",")+"|"+
+      Object.keys(x.removed||{}).sort().join(",");
   }
 
   el("btn-sync").addEventListener("click",function(){
@@ -2453,7 +2500,7 @@
   modeDefaults();
   el("mex-wrap").style.display = el("s-format").value==="mexicano" ? "" : "none";
   applyHostMode();
-  setView(isHost() ? (S.live?"session":(S.players.length?"session":"players")) : "month");
+  setView(isHost() ? (S.live?"session":(activePlayers().length?"session":"players")) : "month");
 
   // exposed for testing
   window.__league={get S(){return S}, set S(v){S=v}, glicko:glicko, matchDetail:matchDetail, makeRound:makeRound,
