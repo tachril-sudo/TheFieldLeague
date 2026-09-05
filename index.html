@@ -532,7 +532,7 @@
     return BANDS[BANDS.length-1];
   }
 
-  var S={v:1,players:[],months:{},live:null,history:[]};
+  var S={v:1,epoch:0,players:[],months:{},live:null,history:[]};
   var view="session";
 
   /* ---------------- storage ---------------- */
@@ -542,11 +542,15 @@
   }
   function pad(n){return (n<10?"0":"")+n}
   function stamp(){var t=new Date();return pad(t.getHours())+":"+pad(t.getMinutes())+":"+pad(t.getSeconds())}
+  function saveLocalOnly(){
+    try{ window.localStorage.setItem(KEY,JSON.stringify(S)); }catch(e){}
+  }
   function save(){
     try{
       window.localStorage.setItem(KEY,JSON.stringify(S));
       flag(true,"Saved on this device · "+stamp());
     }catch(e){ flag(false,"Not saved — storage blocked. Export a backup."); }
+    scheduleSync();
   }
   function load(){
     try{
@@ -1934,7 +1938,12 @@
   var mergedByName=[];
   function mergeStores(local, remote){
     mergedByName=[];
-    var out={v:1, players:[], months:{}, history:[], live:local.live||null,
+    // A wipe stamps a new epoch. The newer epoch wins outright, otherwise the
+    // union merge would helpfully undo the deletion on the next sync.
+    var le=local.epoch||0, re=remote.epoch||0;
+    if(re>le){ var rr=JSON.parse(JSON.stringify(remote)); rr.sync=local.sync||rr.sync; rr.live=null; return rr; }
+    if(le>re){ return JSON.parse(JSON.stringify(local)); }
+    var out={v:1, epoch:le, players:[], months:{}, history:[], live:local.live||null,
              sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0)};
 
     var byIdMap={}, byName={};
@@ -1999,7 +2008,7 @@
     S=next;
     migrateGlicko(); migrateCounting();
     recomputeAll();
-    save(); render();
+    saveLocalOnly(); render();
   }
 
   /* ---------------- backup ---------------- */
@@ -2159,22 +2168,41 @@
 
   function doSync(quiet){
     if(!syncCfg()){ if(!quiet) tellBox("Sync not set up","Tap Sync setup and paste the details for wherever the league lives."); return; }
-    flag(true,"Syncing…");
+    if(syncBusy){ scheduleSync(1500); return; }
+    syncBusy=true;
+    if(!quiet) flag(true,"Syncing…");
     syncRead(function(err,remote){
-      if(err){ flag(false,"Sync failed: "+err); if(!quiet) tellBox("Couldn't reach the league", err); return; }
+      if(err){
+        syncBusy=false;
+        flag(false,"Offline — will retry");
+        if(!quiet) tellBox("Couldn't reach the league", err);
+        scheduleSync(20000);
+        return;
+      }
+      var before=signature(S);
       var merged = remote ? mergeStores(S, remote) : JSON.parse(JSON.stringify(S));
       var mergedNames = remote ? mergedByName.slice() : [];
       merged.t=Date.now();
-      adoptStore(merged);
+      var changed = signature(merged)!==before;
+      if(changed && busyTyping()){ syncBusy=false; scheduleSync(1500); return; }
+      if(changed) adoptStore(merged); else { S.t=merged.t; }
       syncWrite(S,function(err2){
+        syncBusy=false;
         if(err2){
+        if(String(err2).indexOf("read-only")<0) scheduleSync(20000);
+        if(String(err2).indexOf("read-only")>=0){
+          flag(true,"Read-only — standings are up to date");
+          return;
+        }
         flag(false,"Pulled, but couldn't push");
         if(!quiet) tellBox("Reading works, writing doesn't", err2+
-          "\n\nIn Supabase, open the SQL editor and run:\n\n"+
-          "alter table public.leagues enable row level security;\n\n"+
-          "create policy \"league read\" on public.leagues\n  for select to anon using (true);\n\n"+
-          "create policy \"league write\" on public.leagues\n  for insert to anon with check (true);\n\n"+
-          "create policy \"league update\" on public.leagues\n  for update to anon using (true) with check (true);");
+          "\n\nWrites are for the signed-in host only. Check you are signed in, then in the "+
+          "Supabase SQL editor confirm the policies:\n\n"+
+          "grant select on public.leagues to anon;\n"+
+          "grant select, insert, update on public.leagues to authenticated;\n\n"+
+          "create policy \"admin_insert\" on public.leagues\n  for insert to authenticated with check (true);\n\n"+
+          "create policy \"admin_update\" on public.leagues\n  for update to authenticated using (true) with check (true);\n\n"+
+          "Never grant insert or update to anon — that makes the league world-writable.");
         return;
       }
         flag(true,"Synced · "+stamp()+" · "+S.history.length+(S.history.length===1?" session":" sessions")+
@@ -2184,7 +2212,44 @@
     });
   }
 
-  el("btn-sync").addEventListener("click",function(){ doSync(false); });
+  /* Sync runs itself: every save schedules one, debounced so a burst of edits is
+     a single round trip, and deferred while a field is focused or a dialog is
+     open so nothing redraws under someone's thumb. */
+  var syncTimer=null, syncBusy=false;
+  var QUIET_MS=2500, IDLE_POLL_MS=90000;
+
+  function busyTyping(){
+    var a=document.activeElement;
+    if(a && (a.tagName==="INPUT"||a.tagName==="SELECT"||a.tagName==="TEXTAREA")) return true;
+    return !!document.querySelector(".modal-bg");
+  }
+  function scheduleSync(delay){
+    if(!syncCfg()) return;
+    if(syncTimer) clearTimeout(syncTimer);
+    syncTimer=setTimeout(runSync, delay===undefined?QUIET_MS:delay);
+  }
+  function runSync(){
+    if(!syncCfg()) return;
+    if(syncBusy || busyTyping()){ scheduleSync(1500); return; }
+    doSync(true);
+  }
+  function signature(x){
+    return (x.epoch||0)+"|"+(x.players||[]).length+"|"+
+      (x.history||[]).map(function(h){return h.id}).sort().join(",")+"|"+
+      Object.keys(x.months||{}).map(function(k){return k+(x.months[k].closed?"C":"")}).sort().join(",")+"|"+
+      (x.players||[]).map(function(p){return p.name+p.gender+(p.seed||"")}).sort().join(",");
+  }
+
+  el("btn-sync").addEventListener("click",function(){
+    if(syncTimer) clearTimeout(syncTimer);
+    doSync(false);
+  });
+
+  document.addEventListener("visibilitychange",function(){
+    if(!document.hidden) scheduleSync(400);
+  });
+  window.addEventListener("online",function(){ scheduleSync(400); });
+  setInterval(function(){ if(!S.live) scheduleSync(0); }, IDLE_POLL_MS);
 
   el("btn-syncset").addEventListener("click",function(){
     var c=S.sync||syncCfg()||{kind:"supabase",url:"",key:"",table:"leagues",league:"the-field"};
@@ -2288,12 +2353,52 @@
     });
     inp.click();
   });
+  function wipeLocal(epoch){
+    S={v:1, epoch:epoch, players:[], months:{}, live:null, history:[],
+       sync:S.sync||null, syncOff:S.syncOff||false};
+    try{ window.localStorage.removeItem(KEY); }catch(e){}
+    saveLocalOnly(); render();
+  }
+
   el("btn-wipe").addEventListener("click",function(){
-    confirmBox("Erase everything?","Every player, rating, session and month on this device. This cannot be undone — export a backup first if you're unsure.","Erase",function(){
-      S={v:1,players:[],months:{},live:null,history:[]};
-      try{ window.localStorage.removeItem(KEY); }catch(e){}
-      render(); flag(false,"Erased — nothing saved yet");
-    });
+    if(!syncCfg()){
+      confirmBox("Erase everything?",
+        "Every player, rating, session and month on this device. This cannot be undone — "+
+        "export a backup first if you're unsure.","Erase",function(){
+          wipeLocal(S.epoch||0); flag(false,"Erased — nothing saved yet");
+        });
+      return;
+    }
+    dialog({title:"Erase what?",
+      body:"This league is synced. Wiping only this device achieves nothing — the next sync "+
+           "pulls everything back, because merging never deletes.\n\n"+
+           "Erase everywhere replaces the shared copy too, and every other host device clears "+
+           "itself the next time it syncs.",
+      buttons:[{label:"Cancel",kind:"quiet",value:0},
+               {label:"This device only",kind:"ghost",value:1},
+               {label:"Erase everywhere",value:2}],
+      done:function(v){
+        if(!v) return;
+        if(v===1){
+          wipeLocal(S.epoch||0);
+          flag(false,"Erased here — Sync now will pull it all back");
+          return;
+        }
+        if(!isHost()){
+          tellBox("Sign in first","Only the signed-in host can change the shared copy. "+
+            "Tap Host sign in, then try again.");
+          return;
+        }
+        confirmBox("Erase the whole league?",
+          "Every player, rating and session, on every device. There is no undo and no backup "+
+          "unless you have exported one.","Erase everywhere",function(){
+            wipeLocal(Date.now());
+            syncWrite(S,function(err){
+              if(err){ flag(false,"Erased here, but the shared copy is untouched: "+err); return; }
+              flag(true,"Erased everywhere · "+stamp());
+            });
+          });
+      }});
   });
 
   el("btn-host").addEventListener("click",function(){
