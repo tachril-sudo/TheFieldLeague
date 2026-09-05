@@ -211,6 +211,11 @@
   .selog .meta{font-size:12px;color:var(--stone-2);flex:1}
   .selog .pod{font-size:12.5px;text-align:right}
   .selog .pod b{color:var(--tang)}
+  .dvg{margin:0 0 4px}
+  .dvh{display:flex;align-items:center;gap:8px;padding:10px 12px 6px;border-top:1px solid var(--line)}
+  .dvg:first-child .dvh{border-top:0}
+  .dvh .who{font-size:12px;color:var(--stone-2)}
+  .dvw{font-weight:700}
   .wk{width:100%;border-collapse:collapse;font-size:12.5px}
   .wk th{font-size:9.5px;padding:6px 4px}
   .wk td{padding:7px 4px;font-size:12.5px}
@@ -259,6 +264,7 @@
     <span class="msg" id="save-msg">Loading…</span>
     <span class="sp"></span>
     <button id="btn-sync">Sync now</button>
+    <button id="btn-host">Host sign in</button>
     <button id="btn-syncset">Sync setup</button>
     <button id="btn-export">Export backup</button>
     <button id="btn-import">Import</button>
@@ -384,6 +390,12 @@
       <div class="card-f">10-8-6-5-4-3-2-1 per session by finishing position, 1 for everyone else. <b>Only your best 3 sessions count</b>; total is the tiebreak, so an extra session can still win it. Greyed rows have not reached 3 sessions.</div>
     </div>
     <div class="card">
+      <div class="card-h red"><span>Division podiums</span> <small id="dv-sub"></small></div>
+      <div id="dv-body"></div>
+      <div class="card-f">One winner per division, so a Div 4 player is only ever measured against other Div 4 players. <b>Your division is fixed at the rating you started the month on</b> — climbing during the month never moves you into a harder division mid-prize. Same rules otherwise: best 3 sessions decides it, total is the tiebreak, <b>three sessions to qualify</b>, and a division needs <b>at least three qualified players</b> before it pays anything — winning a field of two is not a result. Players still Settling when the month opened have no reliable division and are listed apart.</div>
+    </div>
+
+    <div class="card">
       <div class="card-h">Most improved <small id="mi-sub"></small></div>
       <div id="mi-body"></div>
       <div class="card-f">Rating at the first session of the month against the last. Players still <b>Settling</b> at the start of the month are listed separately — a new rating swinging into place is the system correcting itself, not improvement.</div>
@@ -501,6 +513,7 @@
   };
   function modeOf(live){ return MODES[(live&&live.mode)||"fixedpts"]; }
   var MIN_SESSIONS=3;
+  var MIN_FIELD=3;   // a division needs this many qualified players to pay a prize
   var COUNTING=3;   // only a player's best 3 session scores count toward the month
   // Bands are club-relative, anchored on the 1500 start. The gap between one
 
@@ -825,6 +838,7 @@
 
   /* ---------------- rendering ---------------- */
   function setView(v){
+    if(v==="session" && !isHost()) v="month";
     view=v;
     ["session","month","ratings","players","sessions","hof"].forEach(function(x){
       el("tab-"+x).setAttribute("aria-selected", x===v);
@@ -834,6 +848,7 @@
   }
 
   function render(){
+    applyHostMode();
     if(view==="session") renderSession();
     if(view==="month") renderMonth();
     if(view==="ratings") renderRatings();
@@ -1300,6 +1315,53 @@
   }
   // A newcomer's rating swinging into place is the system correcting itself,
   // not improvement. Only players whose rating was already settled qualify.
+  // A player's division for a month is locked to the rating they carried INTO
+  // their first session that month. Using the live rating instead would punish
+  // winning: climb a band mid-month and you'd be dropped into a harder field.
+  function bandByElo(elo){
+    for(var i=0;i<BANDS.length;i++) if(elo>=BANDS[i].min) return BANDS[i];
+    return BANDS[BANDS.length-1];
+  }
+  function divSort(a,b){
+    var ea=a.sess>=MIN_SESSIONS, eb=b.sess>=MIN_SESSIONS;
+    if(ea!==eb) return ea?-1:1;
+    if(b.best!==a.best) return b.best-a.best;
+    if(b.pts!==a.pts) return b.pts-a.pts;
+    return b.p.elo-a.p.elo;
+  }
+  function divisionTable(k){
+    var mv=monthMovement(k), by={};
+    mv.forEach(function(x){ by[x.id]=x; });
+    var groups={}, settling=[];
+    S.players.forEach(function(p){
+      ensureMonth(p,k);
+      if(!p.ms[k]) return;
+      var m=by[p.id];
+      var row={p:p, best:best3(p,k), pts:p.mp[k], sess:p.ms[k],
+               from:(m?m.from:p.elo), delta:(p.md&&p.md[k])||0};
+      if(!m || m.rdStart>RD_SETTLED){ settling.push(row); return; }
+      var b=bandByElo(row.from);
+      if(!groups[b.name]) groups[b.name]={band:b, rows:[]};
+      groups[b.name].rows.push(row);
+    });
+    var out=BANDS.filter(function(b){ return groups[b.name]; }).map(function(b){
+      groups[b.name].rows.sort(divSort);
+      return groups[b.name];
+    });
+    settling.sort(divSort);
+    return {groups:out, settling:settling};
+  }
+  // winners only — what the prize is actually paid on
+  function divisionWinners(k){
+    return divisionTable(k).groups.map(function(g){
+      var q=g.rows.filter(function(r){ return r.sess>=MIN_SESSIONS; });
+      var w=q[0];
+      return (w && q.length>=MIN_FIELD)
+        ? {div:g.band.name, name:w.p.name, pts:w.best, total:w.pts,
+           elo:Math.round(w.p.elo), field:q.length} : null;
+    }).filter(Boolean);
+  }
+
   function improvedTable(k){
     var all=monthMovement(k);
     return {
@@ -1364,6 +1426,8 @@
       }).join("");
     }
     el("mo-sub").textContent=(closed?"closed":"open")+" · "+MIN_SESSIONS+" sessions to qualify";
+
+    renderDivisions(k);
 
     var imp=improvedTable(k);
     var mb=el("mi-body");
@@ -1499,6 +1563,47 @@
   }
 
   /* --- hall of fame --- */
+  function renderDivisions(k){
+    var dt=divisionTable(k);
+    var head='<table class="wk"><thead><tr><th></th><th class="l">Player</th>'+
+             '<th>Sess</th><th>Best 3</th><th>Total</th><th>Rating</th><th>&Delta;</th></tr></thead><tbody>';
+    function body(rows,dim){
+      var rank=0;
+      return rows.map(function(r){
+        var ok=!dim && r.sess>=MIN_SESSIONS;
+        if(ok) rank++;
+        var cls=ok?(rank===1?"p1":(rank<=3?"p2":"")):"dim";
+        var d=Math.round(r.delta);
+        return '<tr class="'+cls+'"><td>'+(ok?rank:"–")+'</td>'+
+          '<td class="l">'+esc(r.p.name)+(ok?"":'<span class="prov">'+
+            (dim?"settling":r.sess+"/"+MIN_SESSIONS)+'</span>')+'</td>'+
+          '<td>'+r.sess+'</td><td>'+r.best+'</td><td>'+r.pts+'</td>'+
+          '<td>'+Math.round(r.p.elo)+'</td>'+
+          '<td class="'+(d>0?"up":(d<0?"dn":""))+'">'+(d>0?"+":"")+d+'</td></tr>';
+      }).join("");
+    }
+    var html=dt.groups.map(function(g){
+      var q=g.rows.filter(function(r){ return r.sess>=MIN_SESSIONS; });
+      var w=q[0], pays=w&&q.length>=MIN_FIELD;
+      return '<div class="dvg"><div class="dvh">'+
+        '<span class="band '+g.band.css+'">'+g.band.name+'</span>'+
+        '<span class="who">'+q.length+" of "+g.rows.length+' qualified</span>'+
+        '<span style="flex:1"></span>'+
+        (pays ? '<span class="dvw">'+esc(w.p.name)+'</span>'
+              : '<span class="who">'+(q.length? "field of "+q.length+" — too small for a prize"
+                                              : "no one qualified yet")+'</span>')+
+        '</div>'+head+body(g.rows,false)+'</tbody></table></div>';
+    }).join("");
+    if(dt.settling.length){
+      html+='<div class="dvg"><div class="dvh"><span class="band b0">Settling</span>'+
+        '<span class="who">no division this month</span></div>'+
+        head+body(dt.settling,true)+'</tbody></table></div>';
+    }
+    el("dv-body").innerHTML = html || '<div class="empty">No sessions played this month yet.</div>';
+    var n=divisionWinners(k).length;
+    el("dv-sub").textContent = n ? n+(n===1?" prize":" prizes")+" this month" : "no prize pays yet";
+  }
+
   function renderHof(){
     var keys=Object.keys(S.months||{}).filter(function(k){return S.months[k].closed}).sort().reverse();
     if(!keys.length){ el("hof-body").innerHTML='<div class="empty">No months closed yet.</div>'; return; }
@@ -1509,6 +1614,8 @@
       return '<div class="hof"><span class="mo">'+monthName(k)+'</span><span class="names">'+
         (pod.length? pod.map(function(x,i){ return '<b>'+medals[i]+'</b> '+esc(x.name)+' ('+x.pts+' pts)'; }).join(" · ")
                    : "no one qualified")+
+        ((S.months[k].divisions||[]).length? '<br>'+(S.months[k].divisions).map(function(x){
+             return '<b>'+esc(x.div)+'</b> '+esc(x.name); }).join(" · ") : "")+
         (mi? '<br><span style="color:var(--green);font-weight:700">Most improved</span> '+
              esc(mi.name)+' +'+mi.gain+' ('+mi.from+' → '+mi.to+')' : "")+
         '</span></div>';
@@ -1799,8 +1906,11 @@
       .sort(function(a,b){ return (best3(b,k)-best3(a,k))||(b.mp[k]-a.mp[k])||(b.elo-a.elo); });
     var imp=improvedTable(k);
     var mip=imp.eligible.filter(function(x){ return x.gain>0; })[0]||null;
+    var dw=divisionWinners(k);
     var body = elig.length
       ? "Podium:\n"+elig.slice(0,3).map(function(p,i){return (i+1)+". "+p.name+" — "+best3(p,k)+" pts from their best 3"}).join("\n")+
+        (dw.length? "\n\nDivision winners — this is what the prizes pay on:\n"+
+          dw.map(function(x){ return x.div+": "+x.name+" ("+x.pts+" pts, field of "+x.field+")"; }).join("\n") : "")+
         (mip? "\n\nMost improved: "+mip.p.name+"  +"+Math.round(mip.gain)+
               " ("+Math.round(mip.from)+" → "+Math.round(mip.to)+")" : "")+
         "\n\nMonthly points reset. Ratings and history are untouched."
@@ -1809,6 +1919,7 @@
       if(!S.months[k]) S.months[k]={};
       S.months[k].closed=true;
       S.months[k].podium=elig.slice(0,3).map(function(p){ return {name:p.name,pts:best3(p,k),total:p.mp[k],elo:Math.round(p.elo)}; });
+      S.months[k].divisions = dw;
       S.months[k].improved = mip ? {name:mip.p.name, gain:Math.round(mip.gain),
                                     from:Math.round(mip.from), to:Math.round(mip.to),
                                     sessions:mip.sessions} : null;
@@ -1909,12 +2020,88 @@
     var extra="";
     if(status===401||status===403){
       if(/row-level security|permission denied/i.test(msg) || code==="42501")
-        extra=" — the table is locked to writes. Add a policy that lets the anon role insert and update.";
-      else extra=" — the key was accepted for reading but not for writing. Almost always a row-level security policy.";
+        extra=" — the league is read-only for you. Tap Host sign in and try again. Never fix this by granting"+
+              " the anon role insert or update: that makes the league writable by anyone on the internet.";
+      else extra=" — reading is allowed but writing is not. Sign in as host; if you already are, the session"+
+                 " may have expired — sign out and back in.";
     }
     if(status===404) extra=" — no such table. Check the table name and that it lives in the public schema.";
     if(status===409) extra=" — the id column probably isn't a primary key, so the upsert has nothing to match on.";
     return "HTTP "+status+(msg?": "+msg:"")+extra;
+  }
+
+  /* ---------------- host auth ----------------
+     Anyone may read the league. Only a signed-in host may write. The password
+     is never stored; Supabase returns a short-lived access token plus a refresh
+     token, and only those are kept. */
+  var AKEY="tf-league-host-v1";
+  var AUTH=null;
+  try{ AUTH=JSON.parse(window.localStorage.getItem(AKEY)||"null"); }catch(e){ AUTH=null; }
+
+  function saveAuth(){
+    try{ AUTH ? window.localStorage.setItem(AKEY,JSON.stringify(AUTH))
+              : window.localStorage.removeItem(AKEY); }catch(e){}
+  }
+  function isHost(){ return !!(AUTH && AUTH.refresh_token); }
+  function tokenFresh(){
+    return !!(AUTH && AUTH.access_token && AUTH.exp && (AUTH.exp*1000 - Date.now() > 120000));
+  }
+  function authBearer(c){ return (AUTH && AUTH.access_token) ? AUTH.access_token : c.key; }
+  function authBase(c){ return c.url.replace(/\/$/,"")+"/auth/v1/"; }
+
+  function tokenCall(c, query, body, cb){
+    fetch(authBase(c)+"token?grant_type="+query,{
+      method:"POST",
+      headers:{"apikey":c.key,"Content-Type":"application/json"},
+      body:JSON.stringify(body)
+    }).then(function(r){
+      return r.text().then(function(t){
+        var j={}; try{ j=JSON.parse(t); }catch(e){}
+        return {ok:r.ok, j:j};
+      });
+    }).then(function(x){
+      if(!x.ok) throw new Error(x.j.error_description||x.j.msg||x.j.message||"sign-in refused");
+      AUTH={
+        access_token:x.j.access_token,
+        refresh_token:x.j.refresh_token,
+        exp: x.j.expires_at || (Math.floor(Date.now()/1000)+(x.j.expires_in||3600)),
+        email:(x.j.user&&x.j.user.email)||(AUTH&&AUTH.email)||""
+      };
+      saveAuth(); cb(null);
+    }).catch(function(e){ cb(e.message||String(e)); });
+  }
+
+  function hostSignIn(email, pw, cb){
+    var c=syncCfg();
+    if(!c||c.kind!=="supabase") return cb("Host sign-in only works with the Supabase preset.");
+    tokenCall(c,"password",{email:email,password:pw},cb);
+  }
+  function hostRefresh(cb){
+    var c=syncCfg();
+    if(!c||!isHost()) return cb("not signed in");
+    tokenCall(c,"refresh_token",{refresh_token:AUTH.refresh_token},function(err){
+      if(err){ AUTH=null; saveAuth(); applyHostMode(); return cb("host session expired — sign in again"); }
+      cb(null);
+    });
+  }
+  function withFreshToken(cb){ if(tokenFresh()) return cb(null); hostRefresh(cb); }
+  function hostSignOut(){
+    var c=syncCfg();
+    if(c&&c.kind==="supabase"&&AUTH&&AUTH.access_token){
+      try{ fetch(authBase(c)+"logout",{method:"POST",
+        headers:{"apikey":c.key,"Authorization":"Bearer "+AUTH.access_token}}); }catch(e){}
+    }
+    AUTH=null; saveAuth(); applyHostMode(); setView("month");
+  }
+
+  // Everything that writes is hidden from a signed-out visitor. This is comfort,
+  // not security -- the database policies are what actually stop a write.
+  function applyHostMode(){
+    var h=isHost();
+    ["tab-session","btn-syncset","btn-import","btn-wipe","btn-close-month","btn-addplayer"]
+      .forEach(function(id){ var e=el(id); if(e) e.style.display = h ? "" : "none"; });
+    var b=el("btn-host");
+    if(b) b.textContent = h ? ("Host · "+(AUTH.email||"signed in")+" · sign out") : "Host sign in";
   }
 
   function syncRead(cb){
@@ -1924,7 +2111,7 @@
       url=c.url.replace(/\/$/,"")+"/rest/v1/"+encodeURIComponent(c.table)+
           "?id=eq."+encodeURIComponent(c.league)+"&select=data";
       opts.headers["apikey"]=c.key;
-      opts.headers["Authorization"]="Bearer "+c.key;
+      opts.headers["Authorization"]="Bearer "+authBearer(c);
     } else {
       url=c.url; if(c.key) opts.headers["Authorization"]="Bearer "+c.key;
     }
@@ -1939,13 +2126,25 @@
   }
 
   function syncWrite(store, cb){
+    var c=syncCfg();
+    if(c && c.kind==="supabase"){
+      if(!isHost()) return cb("read-only on this device — tap Host sign in to save to the league");
+      return withFreshToken(function(err){
+        if(err) return cb(err);
+        syncWriteNow(store, cb);
+      });
+    }
+    syncWriteNow(store, cb);
+  }
+
+  function syncWriteNow(store, cb){
     var c=syncCfg(); if(!c) return cb("no sync configured");
     var url, opts={method:"PUT", headers:{"Content-Type":"application/json"}};
     if(c.kind==="supabase"){
       url=c.url.replace(/\/$/,"")+"/rest/v1/"+encodeURIComponent(c.table);
       opts.method="POST";
       opts.headers["apikey"]=c.key;
-      opts.headers["Authorization"]="Bearer "+c.key;
+      opts.headers["Authorization"]="Bearer "+authBearer(c);
       opts.headers["Prefer"]="resolution=merge-duplicates";
       opts.body=JSON.stringify([{id:c.league, data:store, updated_at:new Date().toISOString()}]);
     } else {
@@ -2097,6 +2296,43 @@
     });
   });
 
+  el("btn-host").addEventListener("click",function(){
+    if(isHost()){ hostSignOut(); flag(true,"Signed out — league is read-only on this device"); return; }
+    var bg=document.createElement("div"); bg.className="modal-bg";
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true" style="max-width:420px">'+
+      '<h4>Host sign in</h4>'+
+      '<p>Anyone can read the standings. Signing in lets this device record sessions, '+
+      'add players and close months. One account, shared by whoever is running the night.</p>'+
+      '<label class="f" for="ho-email">Email</label>'+
+      '<input type="email" id="ho-email" autocomplete="username" placeholder="host@thefield.id">'+
+      '<div style="height:10px"></div>'+
+      '<label class="f" for="ho-pw">Password</label>'+
+      '<input type="password" id="ho-pw" autocomplete="current-password">'+
+      '<p id="ho-err" style="color:#c0392b;display:none"></p>'+
+      '<div class="acts"><button class="btn quiet" id="ho-cancel">Cancel</button>'+
+      '<button class="btn" id="ho-go">Sign in</button></div></div>';
+    document.body.appendChild(bg);
+    function close(){ if(bg.parentNode) document.body.removeChild(bg); }
+    function fail(m){ var e=bg.querySelector("#ho-err"); e.textContent=m; e.style.display=""; }
+    bg.querySelector("#ho-cancel").addEventListener("click",close);
+    bg.addEventListener("click",function(e){ if(e.target===bg) close(); });
+    bg.querySelector("#ho-pw").addEventListener("keydown",function(e){
+      if(e.key==="Enter") bg.querySelector("#ho-go").click();
+    });
+    bg.querySelector("#ho-go").addEventListener("click",function(){
+      var em=bg.querySelector("#ho-email").value.trim();
+      var pw=bg.querySelector("#ho-pw").value;
+      if(!em||!pw) return fail("Email and password both needed.");
+      bg.querySelector("#ho-go").disabled=true;
+      hostSignIn(em,pw,function(err){
+        bg.querySelector("#ho-go").disabled=false;
+        if(err) return fail(err);
+        close(); applyHostMode(); flag(true,"Signed in as host"); doSync(false);
+      });
+    });
+    setTimeout(function(){ bg.querySelector("#ho-email").focus(); },30);
+  });
+
   ["session","month","ratings","players","sessions","hof"].forEach(function(v){
     el("tab-"+v).addEventListener("click",function(){ setView(v); });
   });
@@ -2111,7 +2347,8 @@
   else if(boot) flag(true,"Sync ready — tap Sync now");
   modeDefaults();
   el("mex-wrap").style.display = el("s-format").value==="mexicano" ? "" : "none";
-  setView(S.live?"session":(S.players.length?"session":"players"));
+  applyHostMode();
+  setView(isHost() ? (S.live?"session":(S.players.length?"session":"players")) : "month");
 
   // exposed for testing
   window.__league={get S(){return S}, set S(v){S=v}, glicko:glicko, matchDetail:matchDetail, makeRound:makeRound,
