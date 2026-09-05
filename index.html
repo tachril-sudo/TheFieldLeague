@@ -895,7 +895,7 @@
             '<button data-open="'+p.id+'">History</button>'+
             (p.hidden ? '<button data-restore="'+p.id+'">Restore</button>'
                       : '<button data-edit="'+p.id+'">Edit</button>'+
-                        '<button data-del="'+p.id+'">Remove</button>')+
+                        '<button data-del="'+p.id+'">Archive</button>')+
           '</span></div>'+
           (S.playerOpen===p.id ? playerDetail(p) : "");
       }).join("");
@@ -926,23 +926,13 @@
       b.addEventListener("click",function(){
         var p=byId(b.dataset.del);
         if(!p) return;
-        if((p.matches||0)===0){
-          confirmBox("Remove "+p.name+"?",
-            "They have never played, so there is nothing to keep. They will be removed on every "+
-            "device the next time it syncs.","Remove",function(){
-              S.removed=S.removed||{};
-              S.removed[p.id]=Date.now();
-              S.players=S.players.filter(function(x){return x.id!==p.id});
-              if(S.playerOpen===p.id) S.playerOpen=null;
-              save(); render();
-            });
-          return;
-        }
         confirmBox("Archive "+p.name+"?",
-          p.name+" has played "+p.matches+" matches, so those sessions still name them. "+
-          "Archiving takes them out of the roster, the session picker, the ratings and the "+
-          "monthly table, and leaves the history alone.\n\n"+
-          "Tick \"Show archived\" on the Players tab to bring them back.",
+          ((p.matches||0)
+            ? p.name+" has played "+p.matches+" matches. Every one of those sessions keeps their "+
+              "name and their results — nothing is ever deleted."
+            : p.name+" has not played yet.")+
+          "\n\nArchiving takes them out of the roster, the session picker, the ratings and the "+
+          "monthly table.\n\nTick \"Show archived\" on the Players tab to bring them back.",
           "Archive",function(){
             p.hidden=true; p.t=Date.now();
             if(S.playerOpen===p.id) S.playerOpen=null;
@@ -1973,14 +1963,17 @@
   // Sessions are the only source of truth, so merging is a union of rosters and
   // a union of session records, then a full replay. No field-level conflicts.
   var mergedByName=[];
-  function mergeStores(local, remote){
+  function mergeStores(local, remote, ignoreEpoch){
     mergedByName=[];
-    // A wipe stamps a new epoch. The newer epoch wins outright, otherwise the
-    // union merge would helpfully undo the deletion on the next sync.
+    // A wipe stamps a new epoch, and the newer epoch wins outright — otherwise the
+    // union merge would helpfully undo the deletion on the next sync. A file the
+    // person deliberately imported is exempt: their intent beats the bookkeeping.
     var le=local.epoch||0, re=remote.epoch||0;
-    if(re>le){ var rr=JSON.parse(JSON.stringify(remote)); rr.sync=local.sync||rr.sync; rr.live=null; return rr; }
-    if(le>re){ return JSON.parse(JSON.stringify(local)); }
-    var out={v:1, epoch:le, players:[], months:{}, history:[], live:local.live||null,
+    if(!ignoreEpoch){
+      if(re>le){ var rr=JSON.parse(JSON.stringify(remote)); rr.sync=local.sync||rr.sync; rr.live=null; return rr; }
+      if(le>re){ return JSON.parse(JSON.stringify(local)); }
+    }
+    var out={v:1, epoch:Math.max(le,re), players:[], months:{}, history:[], live:local.live||null,
              sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0),
              removed:{}};
     // union of tombstones — a removal on any device sticks everywhere
@@ -2379,20 +2372,31 @@
           if(!o||o.v!==1||!Array.isArray(o.players)) throw new Error("bad file");
           dialog({title:"Import backup",
             body:"Merge keeps everything on this device and adds anything the file has that is missing. "+
-                 "Replace throws away what is here.",
+                 "Replace throws away what is here.\n\n"+
+                 "Either way the result becomes the shared copy, so every other device will "+
+                 "match it the next time it syncs.",
             buttons:[{label:"Cancel",kind:"quiet",value:0},
                      {label:"Replace",kind:"ghost",value:2},
                      {label:"Merge",value:1}],
             done:function(v){
               if(!v) return;
+              var names=[], next;
               if(v===1){
-                var names=[];
-                var next=mergeStores(S,o); names=mergedByName.slice();
-                adoptStore(next);
-                flag(true,"Merged - "+S.history.length+(S.history.length===1?" session":" sessions"));
-                if(names.length) reportNameMerge(names);
+                next=mergeStores(S,o,true);          // an import ignores epochs
+                names=mergedByName.slice();
+              } else {
+                next=JSON.parse(JSON.stringify(o));
+                next.sync=S.sync||next.sync||null;
+                next.syncOff=S.syncOff||false;
               }
-              else { adoptStore(o); flag(true,"Backup restored"); }
+              // the person chose this file; it outranks any earlier wipe
+              next.epoch=Date.now();
+              adoptStore(next);
+              flag(true, v===1
+                ? "Merged - "+S.history.length+(S.history.length===1?" session":" sessions")
+                : "Backup restored");
+              scheduleSync(600);
+              if(names.length) reportNameMerge(names);
             }});
         }catch(e){ flag(false,"That file isn't a league backup"); }
       };
