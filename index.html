@@ -1004,7 +1004,12 @@
       .map(function(h){
         var row=(h.table||[]).filter(function(r){return r.id===id})[0];
         if(!row) return null;
-        var pos=(h.table||[]).map(function(r){return r.id}).indexOf(id)+1;
+        // tied players share a position, the way a leaderboard reads
+        var tb=h.table||[], at=tb.map(function(r){return r.id}).indexOf(id), pos=at+1;
+        for(var q=at-1;q>=0;q--){
+          if(tb[q].share===tb[at].share && tb[q].wins===tb[at].wins && tb[q].diff===tb[at].diff) pos=q+1;
+          else break;
+        }
         return {date:h.date,month:h.month,mode:h.mode,target:h.target,pos:pos,of:(h.table||[]).length,
                 before:row.before,after:row.after,delta:row.delta,monthPts:row.monthPts,
                 played:row.played,wins:row.wins,share:row.share};
@@ -1155,7 +1160,6 @@
       if(hi<live.target) return "nobody reached "+live.target+" yet";
       if(c.sa===c.sb) return "a race can't be drawn";
     }
-    if(M.fixed && c.sa===c.sb) return "drawn — no winner";
     return null;
   }
   function badScores(live){
@@ -1875,12 +1879,28 @@
       .sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff)
                                   ||(byId(b.id)?byId(b.id).elo:0)-(byId(a.id)?byId(a.id).elo:0); });
 
-    ranked.forEach(function(r,i){
-      var p=byId(r.id); if(!p) return;
-      ensureMonth(p,k);
-      var got=(i<SESSION_POINTS.length? SESSION_POINTS[i] : 1);
-      p.mp[k]+=got; p.msp[k].push(got); p.ms[k]+=1;
-    });
+    /* Players who finish genuinely level share the points for the places they
+       occupy. Two tied for 1st take (10+8)/2 = 9 each. Without this the last
+       tiebreak — existing rating — would hand out the month's points on a
+       night where nobody separated themselves, which is exactly backwards. */
+    function place(i){ return i<SESSION_POINTS.length ? SESSION_POINTS[i] : 1; }
+    function level(a,b){ return a.share===b.share && a.wins===b.wins && a.diff===b.diff; }
+    var i0=0;
+    while(i0<ranked.length){
+      var i1=i0;
+      while(i1+1<ranked.length && level(ranked[i0],ranked[i1+1])) i1++;
+      var pool=0;
+      for(var q=i0;q<=i1;q++) pool+=place(q);
+      var each=Math.round((pool/(i1-i0+1))*100)/100;
+      for(var w=i0;w<=i1;w++){
+        var pl=byId(ranked[w].id); if(!pl) continue;
+        ensureMonth(pl,k);
+        pl.mp[k]=Math.round((pl.mp[k]+each)*100)/100;
+        pl.msp[k].push(each); pl.ms[k]+=1;
+        ranked[w].got=each; ranked[w].tied=(i1>i0);
+      }
+      i0=i1+1;
+    }
     S.players.forEach(function(p){
       var out=results[p.id]; if(!out) return;
       ensureMonth(p,k);
@@ -1900,7 +1920,7 @@
       table:ranked.map(function(r,i){
         return {name:nameOf(r.id), id:r.id, share:r.share, wins:r.wins, diff:r.diff,
                 pts:t[r.id].pts, against:t[r.id].against, played:t[r.id].rounds,
-                monthPts:(i<SESSION_POINTS.length?SESSION_POINTS[i]:1),
+                monthPts:(r.got!==undefined?r.got:(i<SESSION_POINTS.length?SESSION_POINTS[i]:1)),
                 before:snapshot[r.id].elo, after:results[r.id].elo,
                 rdBefore:snapshot[r.id].rd, rdAfter:results[r.id].rd,
                 delta:results[r.id].elo-snapshot[r.id].elo};
