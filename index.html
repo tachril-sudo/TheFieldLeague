@@ -602,6 +602,18 @@
   function activePlayers(){
     return S.players.filter(function(p){ return !p.hidden; });
   }
+  /* Every player and session carries a creation time. A wipe stamps an epoch, and
+     the epoch only clears things created BEFORE it — work done on another device
+     after the wipe is kept. Records written by older builds have no creation time,
+     so they inherit the current epoch and survive it. */
+  function stampCreation(x){
+    if(!x) return x;
+    var e=x.epoch||0;
+    (x.players||[]).forEach(function(p){ if(p.ct===undefined) p.ct=(p.t&&p.t<e)?e:(p.t||e); });
+    (x.history||[]).forEach(function(h){ if(h.ct===undefined) h.ct=e; });
+    return x;
+  }
+  function bornAfter(item, epoch){ return (item.ct===undefined?epoch:item.ct) >= epoch; }
   function byId(id){ for(var i=0;i<S.players.length;i++) if(S.players[i].id===id) return S.players[i]; return null; }
   function nameOf(id){ var p=byId(id); return p?p.name:"?"; }
   function monthKey(d){ return (d||new Date().toISOString().slice(0,10)).slice(0,7); }
@@ -1673,7 +1685,7 @@
     }
     var seed=parseFloat(el("np-seed").value)||START_ELO;
     S.players.push({id:uid(),name:n,gender:el("np-gender").value,elo:seed,peak:seed,seed:seed,
-      rd:RD_START,vol:VOL_START,matches:0,t:Date.now(),mp:{},ms:{},msp:{},md:{}});
+      rd:RD_START,vol:VOL_START,matches:0,t:Date.now(),ct:Date.now(),mp:{},ms:{},msp:{},md:{}});
     el("np-name").value="";
     save(); render();
   });
@@ -1917,6 +1929,7 @@
   function commitSession(scored,k){
     var live=S.live;
     var rec=buildRecord(live);
+    rec.ct=Date.now();                 // created after any earlier wipe, so it survives one
     S.history.push(rec);
     recomputeAll();
     S.live=null;
@@ -1963,17 +1976,26 @@
   // Sessions are the only source of truth, so merging is a union of rosters and
   // a union of session records, then a full replay. No field-level conflicts.
   var mergedByName=[];
-  function mergeStores(local, remote, ignoreEpoch){
+  function mergeStores(local, remote){
     mergedByName=[];
-    // A wipe stamps a new epoch, and the newer epoch wins outright — otherwise the
-    // union merge would helpfully undo the deletion on the next sync. A file the
-    // person deliberately imported is exempt: their intent beats the bookkeeping.
+    stampCreation(local); stampCreation(remote);
     var le=local.epoch||0, re=remote.epoch||0;
-    if(!ignoreEpoch){
-      if(re>le){ var rr=JSON.parse(JSON.stringify(remote)); rr.sync=local.sync||rr.sync; rr.live=null; return rr; }
-      if(le>re){ return JSON.parse(JSON.stringify(local)); }
-    }
-    var out={v:1, epoch:Math.max(le,re), players:[], months:{}, history:[], live:local.live||null,
+    var cut=Math.max(le,re);   // the latest wipe wins, but only over what predates it
+    var needed={};
+    [local.history||[], remote.history||[]].forEach(function(hs){
+      hs.forEach(function(h){
+        if(!h||!h.id) return;
+        if((h.ct===undefined?cut:h.ct) < cut) return;   // this one is being cleared
+        (h.attendees||[]).forEach(function(id){ needed[id]=1; });
+        (h.rounds||[]).forEach(function(rd){
+          (rd.courts||[]).forEach(function(c){
+            (c.a||[]).concat(c.b||[]).forEach(function(id){ needed[id]=1; });
+          });
+          (rd.sitting||[]).forEach(function(id){ needed[id]=1; });
+        });
+      });
+    });
+    var out={v:1, epoch:cut, players:[], months:{}, history:[], live:local.live||null,
              sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0),
              removed:{}};
     // union of tombstones — a removal on any device sticks everywhere
@@ -1986,6 +2008,7 @@
     var byIdMap={}, byName={};
     function addPlayer(p, fromRemote){
       if(out.removed[p.id]) return;              // deleted somewhere, stays deleted
+      if(!bornAfter(p, cut) && !needed[p.id]) return;  // predates the wipe and no surviving session needs them
       var existing=byIdMap[p.id];
       if(!existing){
         // same human added separately on two devices ends up with two ids
@@ -2011,6 +2034,7 @@
     function addSession(h){
       if(!h||!h.id) return;
       if(seen[h.id]) return;
+      if(!bornAfter(h, cut)) return;             // predates the last wipe
       seen[h.id]=1;
       var copy=JSON.parse(JSON.stringify(h));
       // rewrite any ids that got de-duplicated by name
@@ -2219,7 +2243,10 @@
         return;
       }
       var before=signature(S);
+      var mine={}; (S.history||[]).forEach(function(h){ mine[h.id]=h; });
       var merged = remote ? mergeStores(S, remote) : JSON.parse(JSON.stringify(S));
+      var kept={}; (merged.history||[]).forEach(function(h){ kept[h.id]=1; });
+      var lost=Object.keys(mine).filter(function(id){ return !kept[id]; });
       var mergedNames = remote ? mergedByName.slice() : [];
       merged.t=Date.now();
       var changed = signature(merged)!==before;
@@ -2246,6 +2273,14 @@
       }
         flag(true,"Synced · "+stamp()+" · "+S.history.length+(S.history.length===1?" session":" sessions")+
           (!S.sync&&builtinReady()?" · built-in league":""));
+        if(lost.length){
+          tellBox(lost.length===1?"A session was cleared":lost.length+" sessions were cleared",
+            "Someone erased the league from another device after "+
+            (lost.length===1?"this session was":"these sessions were")+" recorded, so the erase removed "+
+            (lost.length===1?"it":"them")+":\n\n"+
+            lost.map(function(id){ return "· "+(mine[id].date||id); }).join("\n")+
+            "\n\nIf that was a mistake, import your latest backup — an import always wins.");
+        }
         if(mergedNames.length && !quiet) reportNameMerge(mergedNames);
       });
     });
@@ -2380,17 +2415,22 @@
                      {label:"Merge",value:1}],
             done:function(v){
               if(!v) return;
+              // The person chose this file, so its contents count as created now.
+              // That way an earlier wipe can't quietly delete them again.
+              var born=Date.now();
+              stampCreation(o);
+              (o.players||[]).forEach(function(p){ p.ct=born; });
+              (o.history||[]).forEach(function(h){ h.ct=born; });
               var names=[], next;
               if(v===1){
-                next=mergeStores(S,o,true);          // an import ignores epochs
+                next=mergeStores(S,o);
                 names=mergedByName.slice();
               } else {
                 next=JSON.parse(JSON.stringify(o));
+                next.epoch=Math.max(S.epoch||0, o.epoch||0);
                 next.sync=S.sync||next.sync||null;
                 next.syncOff=S.syncOff||false;
               }
-              // the person chose this file; it outranks any earlier wipe
-              next.epoch=Date.now();
               adoptStore(next);
               flag(true, v===1
                 ? "Merged - "+S.history.length+(S.history.length===1?" session":" sessions")
