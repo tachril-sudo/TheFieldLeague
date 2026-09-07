@@ -174,6 +174,9 @@
   }
   .chip[aria-pressed="true"]{background:var(--red);color:#fff;border-color:var(--red)}
   .chip:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+  .chip.new{border-color:var(--green);color:var(--green);font-weight:600}
+  #lv-find{font-size:17px;padding:12px 14px;border-width:2px}
+  #lv-hits{gap:6px}
 
   /* rounds */
   .court{border:1px solid var(--rule);background:#fff;margin-bottom:10px}
@@ -338,10 +341,10 @@
         <div class="card-b" style="padding-bottom:0">
           <div class="grid g3" style="align-items:end">
             <div><label class="f" for="lv-date">Date</label><input type="date" id="lv-date"></div>
-            <div><label class="f" for="lv-add">Add someone who just arrived</label>
-              <select id="lv-add"></select></div>
-            <div><button class="btn ghost" id="btn-lv-add" style="width:100%">Add to session</button></div>
+            <div style="grid-column:span 2"><label class="f" for="lv-find">Someone just arrived</label>
+              <input type="search" id="lv-find" placeholder="Type a name — on the roster or brand new" autocomplete="off"></div>
           </div>
+          <div id="lv-hits" class="chips" style="margin-top:8px"></div>
           <div style="margin-top:12px">
             <label class="f">On court — tap to sit someone out for the rest of the night</label>
             <div class="chips" id="lv-chips"></div>
@@ -503,6 +506,7 @@
   var KEY="modestalk-league-v1";
   var START_ELO=1500;
   var SESSION_POINTS=[10,8,6,5,4,3,2,1];   // by finishing position, then 1
+  var PRIOR_MATCHES=2;   // notional even matches every player is credited with, for ranking only
   var MODES={
     fixedpts:  {label:"Total points",   unit:"points", noun:"pts",   fixed:true,  race:false,
                 blurb:function(t){return "every match adds up to "+t+" points"}},
@@ -767,10 +771,15 @@
         c.b.forEach(function(id){ if(t[id]){t[id].pts+=c.sb;t[id].rounds++;t[id].against+=c.sa;if(c.sb>c.sa)t[id].wins++;} });
       });
     });
-    // share of everything played — the one metric that is fair in every mode
+    /* Share of everything played — the one metric that is fair in every mode.
+       Ranking uses a version shrunk toward even by two notional matches. Without
+       it someone who arrives for the last round wins the night three times as
+       often as the same player who turned up on time (simulated, 4,000 nights). */
+    var prior=(live.target||21)*PRIOR_MATCHES;
     Object.keys(t).forEach(function(id){
       var x=t[id], tot=x.pts+x.against;
-      x.share = tot ? x.pts/tot : 0;
+      x.raw   = tot ? x.pts/tot : 0;
+      x.share = (x.pts + prior/2) / (tot + prior);
       x.diff  = x.pts-x.against;
     });
     return t;
@@ -1087,12 +1096,7 @@
     el("live-sub").textContent=live.courts+" courts · "+modeOf(live).blurb(live.target)+" · "+
       (live.attendees.length-outN)+" playing"+(outN?" · "+outN+" sat out":"");
     if(el("lv-date").value!==live.date) el("lv-date").value=live.date;
-    var avail=activePlayers().filter(function(p){ return live.attendees.indexOf(p.id)<0; })
-      .sort(function(a,b){return a.name.localeCompare(b.name)});
-    el("lv-add").innerHTML = avail.length
-      ? avail.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+'</option>'}).join("")
-      : '<option value="">everyone is already in</option>';
-    el("btn-lv-add").disabled=!avail.length;
+    renderWalkIn(live);
     el("lv-chips").innerHTML=live.attendees.map(function(id){
       var p=byId(id); if(!p) return "";
       var out=(live.out||[]).indexOf(id)>=0;
@@ -1208,23 +1212,29 @@
     el("ss-agst").title = G?"Games conceded":"Points conceded";
     el("ss-foot").textContent = "Played = matches on court. Won = matches won. "+
       (G?"GF/GA = games":"PF/PA = points")+" won and conceded. Share = "+(G?"GF":"PF")+
-      " ÷ ("+(G?"GF+GA":"PF+PA")+"), which is what the ranking uses — so sitting out never costs you and the rotation never has to finish.";
+      " ÷ ("+(G?"GF+GA":"PF+PA")+"), so sitting out never costs you and the rotation never has to finish. "+
+      "For the ranking, everyone is credited with "+PRIOR_MATCHES+" notional even matches, which is why "+
+      "someone who has played only a round or two sits nearer the middle until they have played more.";
     var rows=live.attendees.map(function(id){
       var x=t[id];
-      return {id:id,pts:x.pts,against:x.against,rounds:x.rounds,wins:x.wins,share:x.share,diff:x.diff};
+      return {id:id,pts:x.pts,against:x.against,rounds:x.rounds,wins:x.wins,
+              share:x.share,raw:x.raw,diff:x.diff};
     }).sort(function(a,b){
       if(b.share!==a.share) return b.share-a.share;
       if(b.wins!==a.wins) return b.wins-a.wins;
       if(b.diff!==a.diff) return b.diff-a.diff;
       return byId(b.id).elo-byId(a.id).elo;
     });
+    var maxR=rows.reduce(function(m,r){ return Math.max(m,r.rounds); },0);
     el("ss-body").innerHTML=rows.map(function(r,i){
       var p=byId(r.id);
       var cls=i===0?"p1":(i<3?"p2":"");
       return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(p.name)+tag(p)+'</td>'+
         '<td>'+r.rounds+'</td><td>'+r.wins+'</td><td>'+r.pts+'</td><td>'+r.against+'</td>'+
         '<td>'+(r.diff>0?"+":"")+r.diff+'</td>'+
-        '<td>'+(r.rounds?Math.round(r.share*100)+"%":"–")+'</td></tr>';
+        '<td>'+(r.rounds?Math.round((r.raw!==undefined?r.raw:r.share)*100)+"%":"–")+
+        (r.rounds&&r.rounds<maxR?' <small class="n">('+r.rounds+' of '+maxR+')</small>':"")+
+        '</td></tr>';
     }).join("");
     var done=0,tot=0;
     live.rounds.forEach(function(rd){ rd.courts.forEach(function(c){ tot++; if(c.sa!==null) done++; }); });
@@ -1558,7 +1568,7 @@
         var cls=i===0?"p1":(i<3?"p2":"");
         return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(r.name)+'</td>'+
           '<td>'+r.played+'</td><td>'+r.wins+'</td><td>'+r.pts+'</td><td>'+r.against+'</td>'+
-          '<td>'+Math.round(r.share*100)+'%</td><td>'+r.monthPts+'</td>'+
+          '<td>'+Math.round((r.raw!==undefined?r.raw:r.share)*100)+'%</td><td>'+r.monthPts+'</td>'+
           '<td>'+Math.round(r.after)+'</td>'+
           '<td>'+(r.rdAfter!==undefined?"±"+Math.round(r.rdAfter):"–")+'</td>'+
           '<td class="'+(r.delta>0?"up":(r.delta<0?"dn":""))+'">'+fmtSigned(r.delta)+'</td></tr>';
@@ -1674,10 +1684,28 @@
     S.playerQuery=e.target.value; renderPlayers();
   });
 
+  function nameClash(n){
+    return S.players.filter(function(p){return p.name.toLowerCase()===n.toLowerCase()})[0];
+  }
+  function clashBox(n){
+    tellBox("There's already a "+n,
+      "Names have to be unique, because that's what tells two people apart everywhere in the app "+
+      "— the picker, the standings, and when two devices merge.\n\n"+
+      "Add something short to separate them: a surname initial (\""+n+" S.\"), "+
+      "or whatever people actually call them on court (\""+n+" Kecil\").");
+  }
+  function createPlayer(name, gender, seed){
+    var p={id:uid(),name:name,gender:gender||"M",elo:seed,peak:seed,seed:seed,
+           rd:RD_START,vol:VOL_START,matches:0,t:Date.now(),ct:Date.now(),
+           mp:{},ms:{},msp:{},md:{}};
+    S.players.push(p);
+    return p;
+  }
+
   el("btn-addplayer").addEventListener("click",function(){
     var n=el("np-name").value.trim();
     if(!n) return;
-    var clash=S.players.filter(function(p){return p.name.toLowerCase()===n.toLowerCase()})[0];
+    var clash=nameClash(n);
     if(clash){
       n=clash.name;
       tellBox("There's already a "+n,
@@ -1687,9 +1715,7 @@
         "or whatever people actually call them on court (\""+n+" Kecil\").");
       return;
     }
-    var seed=parseFloat(el("np-seed").value)||START_ELO;
-    S.players.push({id:uid(),name:n,gender:el("np-gender").value,elo:seed,peak:seed,seed:seed,
-      rd:RD_START,vol:VOL_START,matches:0,t:Date.now(),ct:Date.now(),mp:{},ms:{},msp:{},md:{}});
+    createPlayer(n, el("np-gender").value, parseFloat(el("np-seed").value)||START_ELO);
     el("np-name").value="";
     save(); render();
   });
@@ -1751,12 +1777,63 @@
     }
     S.live.date=el("lv-date").value; save(); renderSession();
   });
-  el("btn-lv-add").addEventListener("click",function(){
-    var id=el("lv-add").value; if(!id||!S.live) return;
-    if(S.live.attendees.indexOf(id)<0){
-      S.live.attendees.push(id);
-      save(); renderSession();
+  /* Walk-ins: type a name. Anyone on the roster who isn't in yet shows as a chip;
+     a name nobody has gets an explicit "add as new" chip, so a typo can't quietly
+     create a second Bayu. Joining mid-session is normal here, so it takes one tap. */
+  function renderWalkIn(live){
+    var q=(S.walkQuery||"").trim().toLowerCase();
+    var box=el("lv-hits"); if(!box) return;
+    var avail=activePlayers().filter(function(p){ return live.attendees.indexOf(p.id)<0; });
+    var hits=(q? avail.filter(function(p){ return p.name.toLowerCase().indexOf(q)>=0; })
+               : avail.slice()).sort(function(a,b){return a.name.localeCompare(b.name)});
+    var exact=q? nameClash(q) : null;
+    var html=hits.slice(0,12).map(function(p){
+      return '<button class="chip" data-join="'+p.id+'">'+esc(p.name)+'</button>';
+    }).join("");
+    if(q && !exact){
+      html+='<button class="chip new" data-new="1">+ add “'+esc(S.walkQuery.trim())+'” as a new player</button>';
     }
+    if(!html){
+      var already=q ? live.attendees.map(byId).filter(Boolean).filter(function(p){
+        return p.name.toLowerCase().indexOf(q)>=0; })[0] : null;
+      html= already ? '<span class="n">'+esc(already.name)+' is already in this session.</span>'
+                    : '<span class="n">Everyone on the roster is already in this session.</span>';
+    }
+    box.innerHTML=html;
+    box.querySelectorAll("[data-join]").forEach(function(b){
+      b.addEventListener("click",function(){ joinSession(b.dataset.join); });
+    });
+    var nb=box.querySelector("[data-new]");
+    if(nb) nb.addEventListener("click",function(){
+      var n=(S.walkQuery||"").trim(); if(!n) return;
+      if(nameClash(n)){ clashBox(nameClash(n).name); return; }
+      // A partial match usually means a half-typed name, not a new person.
+      var near=S.players.filter(function(p){
+        return p.name.toLowerCase().indexOf(n.toLowerCase())>=0 ||
+               n.toLowerCase().indexOf(p.name.toLowerCase())>=0; });
+      if(near.length){
+        confirmBox("Is this someone new?",
+          "You already have "+near.slice(0,3).map(function(p){return p.name}).join(", ")+
+          (near.length>3?" and "+(near.length-3)+" more":"")+
+          ".\n\nAdding “"+n+"” creates a separate player with their own rating and history. "+
+          "If you meant one of the above, cancel and tap their name instead.",
+          "Add “"+n+"”", function(){ joinSession(createPlayer(n,"M",START_ELO).id); });
+        return;
+      }
+      joinSession(createPlayer(n, "M", START_ELO).id);
+    });
+  }
+  function joinSession(id){
+    var live=S.live; if(!live) return;
+    if(live.attendees.indexOf(id)<0) live.attendees.push(id);
+    S.walkQuery=""; if(el("lv-find")) el("lv-find").value="";
+    var p=byId(id);
+    save(); renderSession();
+    flag(true, (p?p.name:"Player")+" is in — they play from the next round");
+  }
+  el("lv-find").addEventListener("input",function(e){
+    S.walkQuery=e.target.value;
+    if(S.live) renderWalkIn(S.live);
   });
 
   el("btn-next").addEventListener("click",function(){
@@ -1873,7 +1950,7 @@
       c.a.concat(c.b).forEach(function(id){ matchesPlayed[id]=(matchesPlayed[id]||0)+1; });
     });
 
-    var t=sessionTotals({attendees:rec.attendees, rounds:rec.rounds});
+    var t=sessionTotals({attendees:rec.attendees, rounds:rec.rounds, target:rec.target});
     var ranked=rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; })
       .map(function(id){ return {id:id,share:t[id].share,wins:t[id].wins,diff:t[id].diff}; })
       .sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff)
@@ -1919,7 +1996,7 @@
       month:k, players:rec.attendees.length, rounds:rec.rounds.length,
       table:ranked.map(function(r,i){
         return {name:nameOf(r.id), id:r.id, share:r.share, wins:r.wins, diff:r.diff,
-                pts:t[r.id].pts, against:t[r.id].against, played:t[r.id].rounds,
+                pts:t[r.id].pts, against:t[r.id].against, played:t[r.id].rounds, raw:t[r.id].raw,
                 monthPts:(r.got!==undefined?r.got:(i<SESSION_POINTS.length?SESSION_POINTS[i]:1)),
                 before:snapshot[r.id].elo, after:results[r.id].elo,
                 rdBefore:snapshot[r.id].rd, rdAfter:results[r.id].rd,
