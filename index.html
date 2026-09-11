@@ -175,6 +175,119 @@
   .chip[aria-pressed="true"]{background:var(--red);color:#fff;border-color:var(--red)}
   .chip:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
   .chip.new{border-color:var(--green);color:var(--green);font-weight:600}
+
+  /* ---------- shareable / printable / display result card ----------
+     One layout, three geometries. Every size is a multiple of --u so the same
+     markup works on a phone screenshot, an A4 sheet on the message board, and
+     a landscape TV read from across the lobby. */
+  .share-ov{position:fixed;inset:0;background:rgba(6,10,28,.88);z-index:60;
+    display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto}
+  .share-ov[hidden]{display:none}
+  .share-wrap{width:100%;max-width:760px}
+  .share-stage{display:flex;justify-content:center;overflow:hidden}
+  .share-card{
+    --u:1; --cw:404px; --ar:4/5;
+    --sc-bg:linear-gradient(158deg,#000749 0%,#0A3E9E 52%,#105BE0 100%);
+    --sc-ink:#fff; --sc-mute:rgba(255,255,255,.60); --sc-faint:rgba(255,255,255,.50);
+    --sc-line:rgba(255,255,255,.11); --sc-rule:rgba(255,255,255,.16);
+    --sc-accent:#78D4FB; --sc-blob:rgba(120,212,251,.10);
+    width:var(--cw);flex:none;aspect-ratio:var(--ar);background:var(--sc-bg);color:var(--sc-ink);
+    border-radius:calc(18px*var(--u));padding:calc(22px*var(--u)) calc(22px*var(--u)) calc(18px*var(--u));
+    display:flex;flex-direction:column;position:relative;overflow:hidden;
+    transform-origin:top center;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .share-card.fmt-print{ --u:1.9; --cw:794px; --ar:794/1123;
+    --sc-bg:#fff; --sc-ink:#000749; --sc-mute:#5A6A85; --sc-faint:#8494AC;
+    --sc-line:#E2EAF4; --sc-rule:#C9D8EA; --sc-accent:#105BE0; --sc-blob:rgba(16,91,224,.05);
+    box-shadow:none;border-radius:0}
+  .share-card.fmt-screen{ --u:2.4; --cw:1280px; --ar:16/9; border-radius:0;box-shadow:none}
+  /* a landscape screen is short — the podium blocks give back the height */
+  .fmt-screen .pod{margin:calc(2px*var(--u)) 0 calc(5px*var(--u))}
+  .fmt-screen .pod .b1{height:calc(62px*var(--u))}
+  .fmt-screen .pod .b2{height:calc(45px*var(--u))}
+  .fmt-screen .pod .b3{height:calc(36px*var(--u))}
+  .share-card:after{content:"";position:absolute;right:calc(-70px*var(--u));bottom:calc(-70px*var(--u));
+    width:calc(230px*var(--u));height:calc(230px*var(--u));border-radius:50%;background:var(--sc-blob)}
+  .sc-top{display:flex;justify-content:space-between;align-items:flex-start;position:relative;z-index:2}
+  .sc-kick{font-size:calc(10px*var(--u));letter-spacing:calc(2.2px*var(--u));text-transform:uppercase;
+    color:var(--sc-faint);font-weight:700}
+  .sc-title{font-size:calc(25px*var(--u));font-weight:800;letter-spacing:calc(-.5px*var(--u));
+    line-height:1.08;margin-top:calc(5px*var(--u))}
+  .sc-when{font-size:calc(12px*var(--u));color:var(--sc-mute);margin-top:calc(3px*var(--u))}
+  .sc-dot{width:calc(9px*var(--u));height:calc(9px*var(--u));border-radius:50%;
+    background:var(--pink);margin-top:calc(6px*var(--u));flex:none}
+  .sc-body{flex:1;display:flex;flex-direction:column;justify-content:center;position:relative;z-index:2}
+  .pod{display:flex;align-items:flex-end;gap:calc(9px*var(--u));margin:calc(6px*var(--u)) 0 calc(14px*var(--u))}
+  .pod .col{flex:1;text-align:center;min-width:0}
+  .pod .nm{font-size:calc(13.5px*var(--u));font-weight:700;line-height:1.15;margin-bottom:calc(7px*var(--u));
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pod .bar{border-radius:calc(9px*var(--u)) calc(9px*var(--u)) 0 0;display:flex;align-items:flex-start;
+    justify-content:center;padding-top:calc(8px*var(--u));font-size:calc(19px*var(--u));font-weight:800}
+  .pod .b1{height:calc(96px*var(--u));background:linear-gradient(180deg,#FFD76E,#C99A2E);color:#2A1D00}
+  .pod .b2{height:calc(70px*var(--u));background:linear-gradient(180deg,#DCE7F5,#9FB4CE);color:#10203A}
+  .pod .b3{height:calc(54px*var(--u));background:linear-gradient(180deg,#E3A877,#B4763F);color:#2A1400}
+  .pod .sub{font-size:calc(10.5px*var(--u));color:var(--sc-mute);margin-top:calc(5px*var(--u))}
+  .sc-rows{display:flex;flex-direction:column;position:relative;z-index:2}
+  .sc-row{display:flex;align-items:center;gap:calc(9px*var(--u));padding:calc(5.5px*var(--u)) 0;
+    border-bottom:1px solid var(--sc-line);font-size:calc(13px*var(--u));break-inside:avoid}
+  .sc-row .r{width:calc(19px*var(--u));font-size:calc(12px*var(--u));color:var(--sc-faint);font-weight:700;flex:none}
+  .sc-row .n{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sc-row .v{font-weight:800;font-variant-numeric:tabular-nums}
+  .sc-row .v small{font-weight:500;color:var(--sc-faint);margin-left:calc(3px*var(--u));font-size:.8em}
+  .sc-row.top .n{color:var(--sc-accent)}
+  .sc-row.dim{opacity:.55}
+  /* a TV is read from across the room — two shorter columns beat one long list */
+  .fmt-screen .sc-rows.two{display:block;column-count:2;column-gap:calc(26px*var(--u))}
+  .sc-mip{text-align:center;padding:calc(8px*var(--u)) 0 calc(2px*var(--u))}
+  .sc-mip .big{font-size:calc(30px*var(--u));font-weight:800;letter-spacing:calc(-.6px*var(--u));
+    margin:calc(8px*var(--u)) 0 calc(2px*var(--u))}
+  .sc-mip .gain{display:inline-block;margin-top:calc(10px*var(--u));
+    padding:calc(7px*var(--u)) calc(16px*var(--u));border-radius:calc(22px*var(--u));
+    background:rgba(92,188,144,.22);border:1px solid rgba(92,188,144,.5);
+    color:#8FE3B8;font-weight:800;font-size:calc(17px*var(--u))}
+  .fmt-print .sc-mip .gain{background:#E7F4EE;border-color:#5CBC90;color:#1C5C40}
+  .sc-mip .move{font-size:calc(12.5px*var(--u));color:var(--sc-mute);margin-top:calc(9px*var(--u))}
+  .sc-foot{display:flex;justify-content:space-between;align-items:center;
+    font-size:calc(10.5px*var(--u));color:var(--sc-faint);letter-spacing:calc(.4px*var(--u));
+    position:relative;z-index:2;border-top:1px solid var(--sc-rule);
+    padding-top:calc(9px*var(--u));margin-top:calc(10px*var(--u))}
+  .sc-foot b{color:var(--sc-ink);letter-spacing:calc(1.4px*var(--u));font-size:calc(10.5px*var(--u))}
+  .sc-empty{text-align:center;color:var(--sc-mute);font-size:calc(14px*var(--u))}
+  .sc-ad{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000749}
+  .sc-ad img{width:100%;height:100%;object-fit:contain}
+  .sc-ad .cap{position:absolute;left:0;right:0;bottom:0;padding:calc(14px*var(--u));
+    background:linear-gradient(to top,rgba(0,7,73,.85),transparent);
+    font-size:calc(14px*var(--u));font-weight:600;text-align:center}
+
+  .share-bar{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap}
+  .share-bar .btn{flex:1;min-width:92px;font-size:13px;padding:9px 8px}
+  .share-bar .btn[aria-pressed="true"]{background:var(--tang);color:#fff;border-color:var(--tang)}
+  .share-fmt{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+  .share-fmt .btn{flex:1;min-width:84px;font-size:12.5px;padding:8px 6px}
+  .share-fmt .btn[aria-pressed="true"]{background:var(--federal);color:#fff;border-color:var(--federal)}
+  .share-hint{text-align:center;font-size:12px;color:rgba(255,255,255,.55);margin-top:9px;line-height:1.5}
+
+  /* ---------- rolling display (lobby screen) ---------- */
+  .kiosk{position:fixed;inset:0;background:#000414;z-index:80;display:flex;
+    align-items:center;justify-content:center;overflow:hidden;cursor:none}
+  .kiosk[hidden]{display:none}
+  .kiosk .share-card{transition:opacity .5s ease}
+  .kiosk.fading .share-card{opacity:0}
+  .kiosk-exit{position:absolute;top:14px;right:16px;z-index:3;opacity:.25;font-size:12px;
+    color:#fff;background:transparent;border:1px solid rgba(255,255,255,.4);
+    border-radius:16px;padding:5px 12px;cursor:pointer}
+  .kiosk-exit:hover{opacity:1}
+
+  @media print{
+    body>*{display:none !important}
+    .share-ov{display:block !important;position:static;background:#fff;padding:0;overflow:visible}
+    .share-bar,.share-fmt,.share-hint{display:none !important}
+    .share-wrap{max-width:none;width:auto}
+    .share-stage{overflow:visible}
+    .share-card{transform:none !important;box-shadow:none;border-radius:0;
+      width:100%;height:auto;aspect-ratio:794/1123;break-inside:avoid}
+    @page{size:A4 portrait;margin:12mm}
+  }
+
   #lv-find{font-size:17px;padding:12px 14px;border-width:2px}
   #lv-hits{gap:6px}
 
@@ -380,12 +493,39 @@
     </div>
   </section>
 
+  <div class="share-ov" id="share-ov" hidden>
+    <div class="share-wrap">
+      <div class="share-stage" id="share-stage"><div class="share-card" id="share-card"></div></div>
+      <div class="share-bar">
+        <button class="btn quiet" data-sh="podium">Tonight</button>
+        <button class="btn quiet" data-sh="month">Month top 10</button>
+        <button class="btn quiet" data-sh="mip">Most improved</button>
+      </div>
+      <div class="share-fmt">
+        <button class="btn quiet" id="btn-slides">Adverts…</button>
+        <button class="btn quiet" data-fmt="phone">Phone</button>
+        <button class="btn quiet" data-fmt="print">A4 print</button>
+        <button class="btn quiet" data-fmt="screen">Lobby screen</button>
+        <button class="btn quiet" id="btn-print">Print…</button>
+        <button class="btn quiet" id="btn-kiosk">Start rolling display</button>
+        <button class="btn ghost" id="share-close">Close</button>
+      </div>
+      <p class="share-hint" id="share-hint"></p>
+    </div>
+  </div>
+
+  <div class="kiosk" id="kiosk" hidden>
+    <button class="kiosk-exit" id="kiosk-exit">Exit</button>
+    <div class="share-card fmt-screen" id="kiosk-card"></div>
+  </div>
+
   <!-- ================= MONTH ================= -->
   <section class="panel" id="p-month" hidden>
     <div class="card">
       <div class="card-h red"><span id="mo-title">This month</span>
         <span style="display:flex;align-items:center;gap:8px">
           <select id="mo-pick" style="width:auto;font-size:12.5px;padding:4px 6px"></select>
+          <button class="btn quiet" id="btn-share-month" style="padding:4px 10px;font-size:12.5px">Share card</button>
           <small id="mo-sub"></small>
         </span></div>
       <table><thead><tr><th></th><th>Player</th><th>Sess</th><th title="Best 3 session scores — this decides the month">Best 3</th><th title="Every session added up — the tiebreak">Total</th><th>Rating</th><th>Δ</th></tr></thead>
@@ -467,7 +607,11 @@
   <!-- ================= SESSIONS ================= -->
   <section class="panel" id="p-sessions" hidden>
     <div class="card">
-      <div class="card-h red">Past sessions <small id="se-sub"></small></div>
+      <div class="card-h red"><span>Past sessions</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <button class="btn quiet" id="btn-share-session" style="padding:4px 10px;font-size:12.5px">Podium card</button>
+          <small id="se-sub"></small>
+        </span></div>
       <div id="se-list"></div>
     </div>
     <div id="se-detail"></div>
@@ -1475,7 +1619,7 @@
         var d=Math.round(r.delta);
         return '<tr class="'+cls+'"><td>'+(ok?rank:"–")+'</td>'+
           '<td>'+esc(r.p.name)+tag(r.p)+(ok?"":'<span class="prov">'+r.sess+'/'+MIN_SESSIONS+'</span>')+'</td>'+
-          '<td>'+r.sess+'</td><td>'+r.best+'</td><td>'+r.pts+'</td><td>'+Math.round(r.p.elo)+'</td>'+
+          '<td>'+r.sess+'</td><td>'+fmtPts(r.best)+'</td><td>'+fmtPts(r.pts)+'</td><td>'+Math.round(r.p.elo)+'</td>'+
           '<td class="'+(d>0?"up":(d<0?"dn":""))+'">'+(d>0?"+":"")+d+'</td></tr>';
       }).join("");
     }
@@ -1831,6 +1975,280 @@
     save(); renderSession();
     flag(true, (p?p.name:"Player")+" is in — they play from the next round");
   }
+
+  /* ---------------- shareable result card ----------------
+     One card, three views, sized 4:5 so a phone screenshot crops clean for
+     WhatsApp or Instagram. Everything it shows is already computed elsewhere —
+     this only lays it out. */
+  function shareOpen(view, sessionId){
+    S.shareView=view||"podium";
+    if(sessionId!==undefined) S.shareSession=sessionId;
+    el("share-ov").hidden=false;
+    renderShare();
+  }
+  function shareClose(){ el("share-ov").hidden=true; }
+
+  function latestSession(){
+    var h=(S.history||[]).slice().sort(function(a,b){ return a.date<b.date?1:-1; });
+    if(S.shareSession){
+      var pick=h.filter(function(x){return x.id===S.shareSession})[0];
+      if(pick) return pick;
+    }
+    return h[0]||null;
+  }
+  function prettyDate(iso){
+    var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||"");
+    if(!m) return iso||"";
+    var mo=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return (+m[3])+" "+mo[(+m[2])-1]+" "+m[1];
+  }
+  // shared finish points can land on a fraction; one decimal is plenty and
+  // whole numbers should never show a trailing zero on a wall display
+  function fmtPts(n){ return (Math.round(n*10)/10).toString(); }
+  function pts(n){ return fmtPts(n)+(Math.abs(n)===1?" pt":" pts"); }
+  function shareHead(kick,title,when){
+    return '<div class="sc-top"><div><div class="sc-kick">'+esc(kick)+'</div>'+
+      '<div class="sc-title">'+esc(title)+'</div>'+
+      (when?'<div class="sc-when">'+esc(when)+'</div>':"")+'</div><div class="sc-dot"></div></div>';
+  }
+  function shareFoot(right){
+    return '<div class="sc-foot"><b>THE FIELD</b><span>'+esc(right||"")+'</span></div>';
+  }
+  function podiumBlock(three, valOf, subOf){
+    var order=[1,0,2];   // 2nd, 1st, 3rd
+    var bar=["b2","b1","b3"], place=["2","1","3"];
+    return '<div class="pod">'+order.map(function(idx,i){
+      var x=three[idx];
+      if(!x) return '<div class="col"></div>';
+      return '<div class="col"><div class="nm">'+esc(x.name)+'</div>'+
+        '<div class="bar '+bar[i]+'">'+place[i]+'</div>'+
+        '<div class="sub">'+esc(valOf(x))+(subOf&&subOf(x)?" · "+esc(subOf(x)):"")+'</div></div>';
+    }).join("")+'</div>';
+  }
+
+  var FORMATS={phone:{w:404,label:"Phone"},print:{w:794,label:"A4 print"},screen:{w:1280,label:"Lobby screen"}};
+  function fitCard(host, stage, fmt){
+    host.className="share-card fmt-"+fmt;
+    var avail=stage.clientWidth||stage.parentNode.clientWidth||404;
+    var sc=Math.min(1, avail/FORMATS[fmt].w);
+    host.style.transform="scale("+sc+")";
+    var ar = fmt==="phone"?5/4 : (fmt==="print"?1123/794 : 9/16);
+    stage.style.height=(FORMATS[fmt].w*ar*sc)+"px";
+  }
+  function renderShare(){
+    var host=el("share-card"), v=S.shareView||"podium", fmt=S.shareFmt||"phone";
+    el("share-ov").querySelectorAll("[data-sh]").forEach(function(b){
+      b.setAttribute("aria-pressed", b.dataset.sh===v ? "true" : "false");
+    });
+    el("share-ov").querySelectorAll("[data-fmt]").forEach(function(b){
+      b.setAttribute("aria-pressed", b.dataset.fmt===fmt ? "true" : "false");
+    });
+    el("share-hint").textContent = fmt==="print"
+      ? "Print… opens your browser's print dialog, already set to A4 portrait on white paper."
+      : (fmt==="screen"
+         ? "Sized 16:9 for a lobby TV. Start rolling display cycles these cards and your adverts full screen."
+         : "Screenshot the card above and send it to the group.");
+    paintCard(host, v, fmt);
+    fitCard(host, el("share-stage"), fmt);
+  }
+  function paintCard(host, v, fmt){
+    var k=currentMonthKey();
+
+    if(v.indexOf("ad:")===0){
+      var ad=(S.slides||[])[+v.slice(3)];
+      host.innerHTML = ad ? '<div class="sc-ad"><img src="'+esc(ad.url)+'" alt="">'+
+        (ad.caption?'<div class="cap">'+esc(ad.caption)+'</div>':"")+'</div>' : "";
+      return;
+    }
+    if(v==="podium"){
+      var x=latestSession();
+      if(!x||!(x.table||[]).length){
+        host.innerHTML=shareHead("Session result","Nothing recorded yet","")+
+          '<div class="sc-body"><div class="sc-empty">Finish a session and the podium lands here.</div></div>'+shareFoot("");
+        return;
+      }
+      var M=MODES[x.mode]||MODES.fixedpts;
+      var t=x.table;
+      var tail = fmt==="screen" ? 7 : (fmt==="print" ? 14 : 8);
+      var rest=t.slice(3,tail);
+      host.innerHTML=shareHead("Session result", x.format==="mexicano"?"Mexicano night":"Americano night",
+          prettyDate(x.date)+" · "+x.players+" players · "+M.blurb(x.target))+
+        '<div class="sc-body">'+
+          podiumBlock(t.slice(0,3),
+            function(r){ return pts(r.monthPts); },
+            function(r){ return Math.round((r.raw!==undefined?r.raw:r.share)*100)+"%"; })+
+          (rest.length?'<div class="sc-rows'+(fmt==="screen"&&rest.length>2?" two":"")+'">'+rest.map(function(r,i){
+            return '<div class="sc-row"><span class="r">'+(i+4)+'</span><span class="n">'+esc(r.name)+'</span>'+
+              '<span class="v">'+fmtPts(r.monthPts)+'<small>'+(Math.abs(r.monthPts)===1?"pt":"pts")+'</small></span></div>';
+          }).join("")+'</div>':"")+
+        '</div>'+
+        shareFoot((t.length>tail?"+"+(t.length-tail)+" more · ":"")+"@thefieldjakarta");
+      return;
+    }
+
+    if(v==="month"){
+      var rows=activePlayers().map(function(p){
+          ensureMonth(p,k);
+          return {p:p,best:best3(p,k),pts:p.mp[k],sess:p.ms[k]};
+        }).filter(function(r){ return r.sess>0; })
+        .sort(function(a,b){
+          var ea=a.sess>=MIN_SESSIONS, eb=b.sess>=MIN_SESSIONS;
+          if(ea!==eb) return ea?-1:1;
+          if(b.best!==a.best) return b.best-a.best;
+          if(b.pts!==a.pts) return b.pts-a.pts;
+          return b.p.elo-a.p.elo;
+        }).slice(0,10);
+      if(!rows.length){
+        host.innerHTML=shareHead("Monthly league",monthName(k),"")+
+          '<div class="sc-body"><div class="sc-empty">No sessions played this month yet.</div></div>'+shareFoot("@thefieldjakarta");
+        return;
+      }
+      var rank=0;
+      host.innerHTML=shareHead("Monthly league", monthName(k),
+          (S.months[k]&&S.months[k].closed?"Final":"Standings so far")+" · best 3 sessions count")+
+        '<div class="sc-body"><div class="sc-rows'+(fmt==="screen"&&rows.length>6?" two":"")+'">'+rows.map(function(r){
+          var ok=r.sess>=MIN_SESSIONS; if(ok) rank++;
+          return '<div class="sc-row'+(ok&&rank<=3?" top":"")+(ok?"":" dim")+'">'+
+            '<span class="r">'+(ok?rank:"–")+'</span>'+
+            '<span class="n">'+esc(r.p.name)+'</span>'+
+            '<span class="v">'+fmtPts(r.best)+'<small>'+(ok?(Math.abs(r.best)===1?"pt":"pts"):r.sess+"/"+MIN_SESSIONS)+'</small></span></div>';
+        }).join("")+'</div></div>'+
+        shareFoot(MIN_SESSIONS+" sessions to qualify · @thefieldjakarta");
+      return;
+    }
+
+    // most improved
+    var imp=improvedTable(k), top=imp.eligible.slice(0,3);
+    if(!top.length){
+      host.innerHTML=shareHead("Most improved", monthName(k),"")+
+        '<div class="sc-body"><div class="sc-empty">'+
+        (imp.settling.length? "Everyone with enough sessions is still settling into a rating."
+                            : "Not enough sessions yet this month.")+
+        '</div></div>'+shareFoot("@thefieldjakarta");
+      return;
+    }
+    var w=top[0];
+    host.innerHTML=shareHead("Most improved", monthName(k), "Rating at the first session against the last")+
+      '<div class="sc-body"><div class="sc-mip">'+
+        '<div class="sc-kick">Player of the month</div>'+
+        '<div class="big">'+esc(w.p.name)+'</div>'+
+        '<div class="gain">'+(w.gain>0?"+":"")+Math.round(w.gain)+' rating</div>'+
+        '<div class="move">'+Math.round(w.from)+' → '+Math.round(w.to)+' over '+w.sessions+
+          ' session'+(w.sessions===1?"":"s")+'</div>'+
+      '</div>'+
+      (top.length>1?'<div class="sc-rows" style="margin-top:12px">'+top.slice(1).map(function(x,i){
+        return '<div class="sc-row"><span class="r">'+(i+2)+'</span><span class="n">'+esc(x.p.name)+'</span>'+
+          '<span class="v">'+(x.gain>0?"+":"")+Math.round(x.gain)+'</span></div>';
+      }).join("")+'</div>':"")+
+      '</div>'+shareFoot("@thefieldjakarta");
+  }
+
+  /* ---------------- rolling display ----------------
+     A lobby screen runs unattended for hours, so it takes its slides from the
+     same synced store: update the league on your phone and the screen follows
+     on its next cycle. Adverts are image URLs, kept with everything else. */
+  var kioskTimer=null, kioskIdx=0;
+  function kioskSlides(){
+    var out=["podium","month","mip"];
+    (S.slides||[]).forEach(function(sl,i){ if(sl&&sl.url) out.push("ad:"+i); });
+    return out;
+  }
+  function kioskPaint(){
+    var list=kioskSlides(); if(!list.length) return;
+    kioskIdx = kioskIdx % list.length;
+    var card=el("kiosk-card");
+    paintCard(card, list[kioskIdx], "screen");
+    var vw=window.innerWidth, vh=window.innerHeight;
+    var sc=Math.min(vw/1280, vh/720);
+    card.style.transform="scale("+sc+")";
+    card.style.transformOrigin="center center";
+  }
+  function kioskStep(){
+    var ko=el("kiosk");
+    ko.classList.add("fading");
+    setTimeout(function(){
+      kioskIdx++;
+      kioskPaint();
+      ko.classList.remove("fading");
+    },500);
+  }
+  function kioskStart(){
+    shareClose();
+    kioskIdx=0;
+    el("kiosk").hidden=false;
+    kioskPaint();
+    if(kioskTimer) clearInterval(kioskTimer);
+    kioskTimer=setInterval(kioskStep, (S.slideSecs||12)*1000);
+    if(document.documentElement.requestFullscreen) {
+      try{ document.documentElement.requestFullscreen(); }catch(e){}
+    }
+  }
+  function kioskStop(){
+    if(kioskTimer){ clearInterval(kioskTimer); kioskTimer=null; }
+    el("kiosk").hidden=true;
+    if(document.fullscreenElement && document.exitFullscreen){ try{ document.exitFullscreen(); }catch(e){} }
+  }
+  el("kiosk-exit").addEventListener("click",kioskStop);
+  window.addEventListener("keydown",function(e){ if(e.key==="Escape" && !el("kiosk").hidden) kioskStop(); });
+  window.addEventListener("resize",function(){ if(!el("kiosk").hidden) kioskPaint(); });
+  // the screen refreshes itself as sessions land on other devices
+  setInterval(function(){ if(!el("kiosk").hidden) kioskPaint(); }, 60000);
+  if(location.hash==="#display") setTimeout(kioskStart, 800);
+
+  el("btn-slides").addEventListener("click",function(){
+    var lines=(S.slides||[]).map(function(sl){
+      return sl.url+(sl.caption?" | "+sl.caption:""); }).join("\n");
+    var bg=document.createElement("div"); bg.className="modal-bg";
+    bg.innerHTML='<div class="modal" role="dialog" aria-modal="true">'+
+      '<h4>Adverts on the lobby screen</h4>'+
+      '<p>One image link per line. Add a caption after a vertical bar if you want one.<br>'+
+      '<code>https://…/padel-promo.jpg | Book a court on Ayo</code></p>'+
+      '<p style="color:var(--stone-2)">Images have to be online somewhere the screen can reach — '+
+      'the same repo as this page works. They cycle after the three league cards.</p>'+
+      '<textarea id="sl-text" rows="6" style="width:100%;font-size:14px"></textarea>'+
+      '<label class="f" for="sl-secs" style="margin-top:10px">Seconds per slide</label>'+
+      '<input type="number" id="sl-secs" min="4" max="120" style="width:110px">'+
+      '<div class="acts"><button class="btn quiet" data-x="0">Cancel</button>'+
+      '<button class="btn" data-x="1">Save</button></div></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#sl-text").value=lines;
+    bg.querySelector("#sl-secs").value=S.slideSecs||12;
+    bg.querySelectorAll("[data-x]").forEach(function(b){
+      b.addEventListener("click",function(){
+        if(b.dataset.x==="1"){
+          S.slides=bg.querySelector("#sl-text").value.split("\n")
+            .map(function(l){ return l.trim(); }).filter(Boolean)
+            .map(function(l){
+              var i=l.indexOf("|");
+              return i<0 ? {url:l} : {url:l.slice(0,i).trim(), caption:l.slice(i+1).trim()};
+            });
+          S.slideSecs=Math.max(4, Math.min(120, parseInt(bg.querySelector("#sl-secs").value,10)||12));
+          S.slidesT=Date.now();
+          save();
+          flag(true, S.slides.length ? S.slides.length+" advert"+(S.slides.length===1?"":"s")+" saved"
+                                     : "Adverts cleared");
+        }
+        document.body.removeChild(bg);
+      });
+    });
+  });
+  el("btn-kiosk").addEventListener("click",kioskStart);
+  el("btn-print").addEventListener("click",function(){
+    if((S.shareFmt||"phone")!=="print"){ S.shareFmt="print"; renderShare(); }
+    setTimeout(function(){ window.print(); },200);
+  });
+  el("share-ov").querySelectorAll("[data-fmt]").forEach(function(b){
+    b.addEventListener("click",function(){ S.shareFmt=b.dataset.fmt; renderShare(); });
+  });
+  window.addEventListener("resize",function(){ if(!el("share-ov").hidden) renderShare(); });
+  el("share-close").addEventListener("click",shareClose);
+  el("share-ov").addEventListener("click",function(e){ if(e.target===el("share-ov")) shareClose(); });
+  el("share-ov").querySelectorAll("[data-sh]").forEach(function(b){
+    b.addEventListener("click",function(){ S.shareView=b.dataset.sh; renderShare(); });
+  });
+  el("btn-share-month").addEventListener("click",function(){ shareOpen("month"); });
+  el("btn-share-session").addEventListener("click",function(){ shareOpen("podium", S.seOpen||null); });
+
   el("lv-find").addEventListener("input",function(e){
     S.walkQuery=e.target.value;
     if(S.live) renderWalkIn(S.live);
@@ -2094,7 +2512,14 @@
     });
     var out={v:1, epoch:cut, players:[], months:{}, history:[], live:local.live||null,
              sync:local.sync||remote.sync||null, t:Math.max(local.t||0, remote.t||0),
-             removed:{}};
+             removed:{},
+             slides:[], slidesT:0, slideSecs:12};
+    // adverts and cycle length are settings, not history — newest edit wins
+    var ls=local.slidesT||0, rs=remote.slidesT||0;
+    var src = rs>ls ? remote : local;
+    out.slides=(src.slides||[]).slice();
+    out.slidesT=Math.max(ls,rs);
+    out.slideSecs=src.slideSecs||local.slideSecs||remote.slideSecs||12;
     // union of tombstones — a removal on any device sticks everywhere
     [local.removed||{}, remote.removed||{}].forEach(function(m){
       Object.keys(m).forEach(function(id){
@@ -2409,7 +2834,8 @@
       (x.history||[]).map(function(h){return h.id}).sort().join(",")+"|"+
       Object.keys(x.months||{}).map(function(k){return k+(x.months[k].closed?"C":"")}).sort().join(",")+"|"+
       (x.players||[]).map(function(p){return p.name+p.gender+(p.seed||"")+(p.hidden?"H":"")}).sort().join(",")+"|"+
-      Object.keys(x.removed||{}).sort().join(",");
+      Object.keys(x.removed||{}).sort().join(",")+"|"+
+      (x.slides||[]).map(function(s2){return s2.url}).join(",")+"|"+(x.slideSecs||12);
   }
 
   el("btn-sync").addEventListener("click",function(){
@@ -2646,7 +3072,8 @@
   // exposed for testing
   window.__league={get S(){return S}, set S(v){S=v}, glicko:glicko, matchDetail:matchDetail, makeRound:makeRound,
                    mergeStores:mergeStores, adoptStore:adoptStore, recomputeAll:recomputeAll,
-                   sessionTotals:sessionTotals, render:render, setView:setView, byId:byId};
+                   sessionTotals:sessionTotals, render:render, setView:setView, byId:byId,
+                   kioskStep:kioskStep, kioskSlides:kioskSlides, paintCard:paintCard};
 })();
 </script>
 </body>
