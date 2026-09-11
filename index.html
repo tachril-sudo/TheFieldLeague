@@ -2670,7 +2670,7 @@
   }
   function isHost(){ return !!(AUTH && AUTH.refresh_token); }
   function tokenFresh(){
-    return !!(AUTH && AUTH.access_token && AUTH.exp && (AUTH.exp*1000 - Date.now() > 120000));
+    return !!(AUTH && AUTH.access_token && AUTH.exp && (AUTH.exp*1000 - Date.now() > 300000));
   }
   function authBearer(c){ return (AUTH && AUTH.access_token) ? AUTH.access_token : c.key; }
   function authBase(c){ return c.url.replace(/\/$/,"")+"/auth/v1/"; }
@@ -2700,17 +2700,33 @@
   function hostSignIn(email, pw, cb){
     var c=syncCfg();
     if(!c||c.kind!=="supabase") return cb("Host sign-in only works with the Supabase preset.");
-    tokenCall(c,"password",{email:email,password:pw},cb);
+    tokenCall(c,"password",{email:email,password:pw},function(err){
+      if(!err){ hostLapsed=false; hostLapsedTold=false; }
+      cb(err);
+    });
   }
+  var hostLapsed=false, hostLapsedTold=false;   // was signed in; the sign-in died mid-use
+  var refreshWaiters=null;   // non-null means a refresh is already in flight
   function hostRefresh(cb){
     var c=syncCfg();
     if(!c||!isHost()) return cb("not signed in");
+    if(refreshWaiters){ refreshWaiters.push(cb); return; }   // a rotated refresh
+    refreshWaiters=[cb];                                     // token is single-use
     tokenCall(c,"refresh_token",{refresh_token:AUTH.refresh_token},function(err){
-      if(err){ AUTH=null; saveAuth(); applyHostMode(); return cb("host session expired — sign in again"); }
-      cb(null);
+      var waiting=refreshWaiters; refreshWaiters=null;
+      if(err){ AUTH=null; saveAuth(); hostLapsed=true; applyHostMode(); }
+      var msg = err ? "host session expired — sign in again" : null;
+      waiting.forEach(function(f){ try{ f(msg); }catch(e){} });
     });
   }
   function withFreshToken(cb){ if(tokenFresh()) return cb(null); hostRefresh(cb); }
+  // a padel night runs longer than an access token lives, so keep it warm even
+  // while auto-sync is paused for the live session
+  setInterval(function(){
+    if(!isHost() || !syncCfg()) return;
+    if(tokenFresh()) return;
+    hostRefresh(function(){});
+  }, 10*60*1000);
   function hostSignOut(){
     var c=syncCfg();
     if(c&&c.kind==="supabase"&&AUTH&&AUTH.access_token){
@@ -2732,6 +2748,17 @@
 
   function syncRead(cb){
     var c=syncCfg(); if(!c) return cb("no sync configured");
+    /* A read sent with an expired host token is refused, and until this was
+       fixed that stopped the whole sync — including the write that carries the
+       session just finished. Refresh first; if the refresh fails, read anonymously
+       rather than going dark. */
+    if(c.kind==="supabase" && isHost() && !tokenFresh()){
+      return hostRefresh(function(){ syncReadNow(cb); });
+    }
+    syncReadNow(cb);
+  }
+  function syncReadNow(cb, readRetried){
+    var c=syncCfg(); if(!c) return cb("no sync configured");
     var url, opts={method:"GET", headers:{}};
     if(c.kind==="supabase"){
       url=c.url.replace(/\/$/,"")+"/rest/v1/"+encodeURIComponent(c.table)+
@@ -2742,9 +2769,15 @@
       url=c.url; if(c.key) opts.headers["Authorization"]="Bearer "+c.key;
     }
     fetch(url,opts).then(function(r){
+      if((r.status===401||r.status===403) && c.kind==="supabase" && isHost() && !readRetried){
+        readRetried=true;
+        AUTH.exp=0;                                  // treat it as expired and retry once
+        return hostRefresh(function(){ syncReadNow(cb, true); });
+      }
       if(!r.ok) return r.text().then(function(t){ throw new Error(explain(r.status,t)); });
       return r.json();
     }).then(function(j){
+      if(j===undefined) return;                      // the retry above owns the callback
       var data = (c.kind==="supabase") ? (Array.isArray(j)&&j[0]?j[0].data:null)
                                        : (j&&j.record ? j.record : j);
       cb(null, data);
@@ -2763,7 +2796,7 @@
     syncWriteNow(store, cb);
   }
 
-  function syncWriteNow(store, cb){
+  function syncWriteNow(store, cb, wroteRetried){
     var c=syncCfg(); if(!c) return cb("no sync configured");
     var url, opts={method:"PUT", headers:{"Content-Type":"application/json"}};
     if(c.kind==="supabase"){
@@ -2778,6 +2811,13 @@
       opts.body=JSON.stringify(store);
     }
     fetch(url,opts).then(function(r){
+      if((r.status===401||r.status===403) && c.kind==="supabase" && isHost() && !wroteRetried){
+        AUTH.exp=0;
+        return hostRefresh(function(err){
+          if(err) return cb(err);
+          syncWriteNow(store, cb, true);
+        });
+      }
       if(!r.ok) return r.text().then(function(t){ throw new Error(explain(r.status,t)); });
       cb(null);
     }).catch(function(e){ cb(e.message||String(e)); });
@@ -2791,9 +2831,13 @@
     syncRead(function(err,remote){
       if(err){
         syncBusy=false;
-        flag(false,"Offline — will retry");
-        if(!quiet) tellBox("Couldn't reach the league", err);
-        scheduleSync(20000);
+        var expired=/sign in again|expired|JWT|401/i.test(err);
+        flag(false, expired ? "Host sign-in expired — tap Host sign in" : "Offline — will retry");
+        if(!quiet) tellBox(expired?"Host sign-in expired":"Couldn't reach the league",
+          expired ? "The league is still safe on this device and nothing is lost. Tap "+
+                    "Host sign in to reconnect, and this session uploads straight away."
+                  : err);
+        scheduleSync(expired ? 60000 : 20000);
         return;
       }
       var before=signature(S);
@@ -2811,6 +2855,21 @@
         if(err2){
         if(String(err2).indexOf("read-only")<0) scheduleSync(20000);
         if(String(err2).indexOf("read-only")>=0){
+          if(hostLapsed){
+            /* Telling a host with an unsaved session that everything is up to
+               date is the worst possible lie, so name it and offer the fix. */
+            flag(false,"Host sign-in expired — not uploaded");
+            if(!hostLapsedTold){
+              hostLapsedTold=true;
+              confirmBox("Host sign-in expired",
+                "Tonight's session is saved on this device, but it has not reached the league yet "+
+                "because the host sign-in lapsed while you were playing.\n\n"+
+                "Sign in again and it uploads straight away. Nothing is lost in the meantime.",
+                "Host sign in", function(){ el("btn-host").dispatchEvent(new Event("click")); });
+            }
+            scheduleSync(60000);
+            return;
+          }
           flag(true,"Read-only — standings are up to date");
           return;
         }
