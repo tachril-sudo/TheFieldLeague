@@ -175,6 +175,27 @@
   .chip[aria-pressed="true"]{background:var(--red);color:#fff;border-color:var(--red)}
   .chip:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
   .chip.new{border-color:var(--green);color:var(--green);font-weight:600}
+  /* filter bars — segmented, thumb-sized, one row per question */
+  .fbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:12px 14px;
+    border-bottom:1px solid var(--rule);background:#FAFBFD}
+  .fbar .seg{display:inline-flex;border:1.5px solid var(--rule);border-radius:10px;overflow:hidden}
+  .fbar .seg button{border:0;background:#fff;padding:8px 13px;font-size:14px;cursor:pointer;
+    color:var(--stone-2);font-weight:600;min-height:38px}
+  .fbar .seg button+button{border-left:1.5px solid var(--rule)}
+  .fbar .seg button[aria-pressed="true"]{background:var(--federal);color:#fff}
+  .fbar .tog{display:inline-flex;align-items:center;gap:7px;font-size:14px;color:var(--stone-2);
+    cursor:pointer;min-height:38px;user-select:none}
+  .fbar .tog input{width:18px;height:18px;margin:0}
+  .fbar .count{margin-left:auto;font-size:12.5px;color:var(--stone-2)}
+  /* on a phone the ratings table was squeezing names to three letters a line —
+     Matches and Peak are the least-read columns, so they go first */
+  @media (max-width:560px){
+    #p-ratings table th:nth-child(4),#p-ratings table td:nth-child(4),
+    #p-ratings table th:nth-child(6),#p-ratings table td:nth-child(6){display:none}
+    #p-ratings table td:nth-child(2){min-width:118px}
+  }
+  .dvnote{font-size:13.5px;line-height:1.55;color:var(--stone-2);margin:4px 14px 10px;
+    padding:10px 12px;background:#F4F7FC;border-left:3px solid var(--tang);border-radius:4px}
 
   /* ---------- shareable / printable / display result card ----------
      One layout, three geometries. Every size is a multiple of --u so the same
@@ -520,6 +541,7 @@
           <button class="btn quiet" id="btn-share-month" style="padding:4px 10px;font-size:12.5px">Share card</button>
           <small id="mo-sub"></small>
         </span></div>
+      <div class="fbar" id="mo-filter"></div>
       <table><thead><tr><th></th><th>Player</th><th>Sess</th><th title="Best 3 session scores — this decides the month">Best 3</th><th title="Every session added up — the tiebreak">Total</th><th>Rating</th><th>Δ</th></tr></thead>
       <tbody id="mo-body"></tbody></table>
       <div class="card-f">10-8-6-5-4-3-2-1 per session by finishing position, 1 for everyone else. <b>Only your best 3 sessions count</b>; total is the tiebreak, so an extra session can still win it. Greyed rows have not reached 3 sessions.</div>
@@ -548,6 +570,7 @@
   <section class="panel" id="p-ratings" hidden>
     <div class="card">
       <div class="card-h red">Glicko-2 ratings <small id="rt-sub"></small></div>
+      <div class="fbar" id="rt-filter"></div>
       <table><thead><tr><th></th><th>Player</th><th>Division</th><th>Matches</th><th title="How sure the rating is — smaller is surer">±</th><th>Peak</th><th>Rating</th></tr></thead>
       <tbody id="rt-body"></tbody></table>
       <div class="card-f">Glicko-2. Each rating carries a <b>±</b> — how sure the system is. It starts wide, narrows as you play, and widens again if you stop coming, so a returning player moves quickly back to where they belong. <b>Settling</b> means the ± is still above 110. Divisions are 100 points apart and are <b>club-internal</b> — Div 2 here is not a national grade. One division up means winning roughly 64% of the time against the division below.</div>
@@ -1615,7 +1638,13 @@
     el("close-mo-name").textContent=monthName(k);
     var closed=S.months[k]&&S.months[k].closed;
     el("btn-close-month").disabled=!!closed;
-    var rows=activePlayers().map(function(p){
+    var fb=el("mo-filter");
+    var played=activePlayers().filter(function(p){ ensureMonth(p,k); return p.ms[k]>0; });
+    fb.innerHTML=segHTML("moG",GENDER_OPTS)+
+      '<span class="count">'+played.filter(function(p){return genderOK(p,"moG")}).length+
+      ' of '+played.length+' shown</span>';
+    wireFilter(fb, renderMonth);
+    var rows=activePlayers().filter(function(p){ return genderOK(p,"moG"); }).map(function(p){
       ensureMonth(p,k);
       return {p:p,best:best3(p,k),pts:p.mp[k],sess:p.ms[k],delta:(p.md&&p.md[k])||0};
     }).filter(function(r){ return r.sess>0; })
@@ -1626,7 +1655,9 @@
         if(b.pts!==a.pts) return b.pts-a.pts;       // then everything played
         return b.p.elo-a.p.elo;
       });
-    if(!rows.length){ el("mo-body").innerHTML='<tr><td colspan="6"><div class="empty">No sessions played this month yet.</div></td></tr>'; }
+    if(!rows.length){ el("mo-body").innerHTML='<tr><td colspan="7"><div class="empty">'+
+      (played.length? "Nobody in this filter has played this month." : "No sessions played this month yet.")+
+      '</div></td></tr>'; }
     else{
       var rank=0;
       el("mo-body").innerHTML=rows.map(function(r){
@@ -1666,10 +1697,63 @@
     }
   }
 
+  /* --- filters ---
+     Filters are a view, not a result: they never touch points or ratings,
+     only which rows show and how the visible rows are numbered. Kept per
+     device (not synced) because what one host wants to look at is not a
+     league fact. */
+  // Held outside the league store, so a sync never resets someone's view and
+  // one host's filter never travels to another device.
+  var FILT_KEY="tf-league-filters-v1", FILT=null;
+  function F(){
+    if(!FILT){ try{ FILT=JSON.parse(window.localStorage.getItem(FILT_KEY)||"{}")||{}; }catch(e){ FILT={}; } }
+    return FILT;
+  }
+  function saveFilt(){ try{ window.localStorage.setItem(FILT_KEY, JSON.stringify(F())); }catch(e){} }
+  function segHTML(key, opts){
+    var cur=F()[key]||opts[0][0];
+    return '<span class="seg" role="group">'+opts.map(function(o){
+      return '<button type="button" data-fk="'+key+'" data-fv="'+o[0]+'" aria-pressed="'+
+        (cur===o[0]?"true":"false")+'">'+o[1]+'</button>';
+    }).join("")+'</span>';
+  }
+  function togHTML(key,label){
+    return '<label class="tog"><input type="checkbox" data-fk="'+key+'"'+(F()[key]?" checked":"")+'> '+label+'</label>';
+  }
+  function wireFilter(host, redraw){
+    host.querySelectorAll("button[data-fk]").forEach(function(b){
+      b.addEventListener("click",function(){ F()[b.dataset.fk]=b.dataset.fv; saveFilt(); redraw(); });
+    });
+    host.querySelectorAll("input[data-fk]").forEach(function(c){
+      c.addEventListener("change",function(){ F()[c.dataset.fk]=c.checked; saveFilt(); redraw(); });
+    });
+  }
+  var GENDER_OPTS=[["all","All"],["M","Men"],["F","Women"]];
+  function genderOK(p,key){ var g=F()[key]||"all"; return g==="all" || p.gender===g; }
+
   /* --- ratings --- */
   function renderRatings(){
-    var rows=activePlayers().sort(function(a,b){return b.elo-a.elo});
-    if(!rows.length){ el("rt-body").innerHTML='<tr><td colspan="5"><div class="empty">No players yet.</div></td></tr>'; el("rt-cats").innerHTML=""; return; }
+    var everyone=activePlayers().sort(function(a,b){return b.elo-a.elo});
+    var fb=el("rt-filter");
+    var divs=[["all","All"]].concat(BANDS.map(function(b){ return [b.name, b.name.replace("Div ","D")]; }));
+    var rows=everyone.filter(function(p){
+      if(!genderOK(p,"rtG")) return false;
+      var b=bandOf(p), d=F().rtD||"all";
+      if(F().rtHide && b.name==="Settling") return false;
+      if(d!=="all" && b.name!==d) return false;
+      return true;
+    });
+    fb.innerHTML=segHTML("rtG",GENDER_OPTS)+segHTML("rtD",divs)+
+      togHTML("rtHide","Hide settling")+
+      '<span class="count">'+rows.length+' of '+everyone.length+' shown</span>';
+    wireFilter(fb, renderRatings);
+    if(!everyone.length){ el("rt-body").innerHTML='<tr><td colspan="7"><div class="empty">No players yet.</div></td></tr>'; el("rt-cats").innerHTML=""; return; }
+    if(!rows.length){
+      el("rt-body").innerHTML='<tr><td colspan="7"><div class="empty">'+
+        ((F().rtD||"all")!=="all"
+          ? "Nobody is in "+F().rtD+" yet"+(F().rtHide?"":" — settling players have no division")+"."
+          : "Nobody matches these filters.")+'</div></td></tr>';
+    } else
     el("rt-body").innerHTML=rows.map(function(p,i){
       var b=bandOf(p);
       return '<tr class="'+(i===0?"p1":(i<3?"p2":""))+'"><td>'+(i+1)+'</td>'+
@@ -1678,7 +1762,8 @@
         '<td>'+(p.matches||0)+'</td><td>±'+Math.round(rdOf(p))+'</td>'+
         '<td>'+Math.round(p.peak||p.elo)+'</td><td>'+Math.round(p.elo)+'</td></tr>';
     }).join("");
-    el("rt-sub").textContent=rows.length+" rated players";
+    el("rt-sub").textContent=everyone.length+" rated players";
+    rows=everyone;   // the category cards always describe the whole club
     function top(g){
       var f=rows.filter(function(p){return p.gender===g});
       return f.length? esc(f[0].name)+" · "+Math.round(f[0].elo) : "—";
@@ -1791,7 +1876,9 @@
         var d=Math.round(r.delta);
         return '<tr class="'+cls+'"><td>'+(ok?rank:"–")+'</td>'+
           '<td class="l">'+esc(r.p.name)+(ok?"":'<span class="prov">'+
-            (dim?"settling":r.sess+"/"+MIN_SESSIONS)+'</span>')+'</td>'+
+            (dim ? (bandOf(r.p).name==="Settling" ? "settling"
+                                                  : bandOf(r.p).name+" next month")
+                 : r.sess+"/"+MIN_SESSIONS)+'</span>')+'</td>'+
           '<td>'+r.sess+'</td><td>'+r.best+'</td><td>'+r.pts+'</td>'+
           '<td>'+Math.round(r.p.elo)+'</td>'+
           '<td class="'+(d>0?"up":(d<0?"dn":""))+'">'+(d>0?"+":"")+d+'</td></tr>';
@@ -1810,8 +1897,18 @@
         '</div>'+head+body(g.rows,false)+'</tbody></table></div>';
     }).join("");
     if(dt.settling.length){
+      var placed=dt.settling.filter(function(r){ return bandOf(r.p).name!=="Settling"; }).length;
+      var firstMonth=!dt.groups.length;
       html+='<div class="dvg"><div class="dvh"><span class="band b0">Settling</span>'+
-        '<span class="who">no division this month</span></div>'+
+        '<span class="who">'+(firstMonth ? "unrated when the month opened" : "no division this month")+'</span></div>'+
+        (firstMonth
+          ? '<p class="dvnote">Divisions are fixed at the rating you start the month on, and nobody had '+
+            'one when this month opened — so no division prize can pay this month. That is the rule '+
+            'working, not a fault. '+(placed
+              ? '<b>'+placed+' player'+(placed===1?" has":"s have")+' already settled</b> and '+
+                'will start next month in the division shown.'
+              : 'A rating settles after about four sessions.')+'</p>'
+          : "")+
         head+body(dt.settling,true)+'</tbody></table></div>';
     }
     el("dv-body").innerHTML = html || '<div class="empty">No sessions played this month yet.</div>';
