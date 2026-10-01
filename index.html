@@ -182,6 +182,13 @@
   .chip:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
   .chip.new{border-color:var(--green);color:var(--green);font-weight:600}
   /* filter bars — segmented, thumb-sized, one row per question */
+  .pracbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:11px 16px;background:#FFF4E2;border-bottom:2px solid #E8A33D}
+  .pracbar[hidden]{display:none}
+  .pracbar .pdot{width:10px;height:10px;border-radius:50%;background:#E8A33D;flex:none}
+  .pracbar .ptxt{font-size:13.5px;color:#6B4A14;flex:1;min-width:220px;line-height:1.45}
+  .pracbar button{font-size:13px;padding:7px 12px;border:1.5px solid #D9933A;background:#fff;
+    color:#6B4A14;border-radius:8px;cursor:pointer;font-weight:600;min-height:36px}
   .fbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:12px 14px;
     border-bottom:1px solid var(--rule);background:#FAFBFD}
   .fbar .seg{display:inline-flex;border:1.5px solid var(--rule);border-radius:10px;overflow:hidden}
@@ -196,6 +203,9 @@
   /* on a phone the ratings table was squeezing names to three letters a line —
      Matches and Peak are the least-read columns, so they go first */
   @media (max-width:560px){
+    /* GF and GA go, not Win % — the ranking leads on that one */
+    #ss-table th:nth-child(6),#ss-table td:nth-child(6),
+    #ss-table th:nth-child(7),#ss-table td:nth-child(7){display:none}
     #p-ratings table th:nth-child(4),#p-ratings table td:nth-child(4),
     #p-ratings table th:nth-child(6),#p-ratings table td:nth-child(6){display:none}
     #p-ratings table td:nth-child(2){min-width:118px}
@@ -420,12 +430,21 @@
     <p class="kicker">Ratings carry over forever. Monthly points reset on the 1st. Play three sessions in a month to be eligible for the podium.</p>
   </header>
 
+  <div class="pracbar" id="pracbar" hidden>
+    <span class="pdot"></span>
+    <span class="ptxt"><b>Practice mode</b> — a sandbox on this device. Nothing here reaches the league,
+      and the real standings are untouched.</span>
+    <button id="btn-prac-reset">Reset sandbox</button>
+    <button id="btn-prac-exit">Leave practice</button>
+  </div>
+
   <div class="savebar">
     <span class="dot" id="save-dot"></span>
     <span class="msg" id="save-msg">Loading…</span>
     <span class="sp"></span>
     <button id="btn-sync">Sync now</button>
     <button id="btn-host">Host sign in</button>
+    <button id="btn-practice" hidden>Practice session</button>
     <button id="btn-syncset">Sync setup</button>
     <button id="btn-export">Export backup</button>
     <button id="btn-import">Import</button>
@@ -556,14 +575,15 @@
       </div>
       <div class="card">
         <div class="card-h">Session standings <small id="ss-sub"></small></div>
-        <table><thead><tr>
+        <table id="ss-table"><thead><tr>
           <th></th><th>Player</th>
           <th title="Matches played this session">Played</th>
           <th title="Matches won">Won</th>
+          <th title="Matches won as a share of matches played — the first thing the ranking looks at">Win %</th>
           <th id="ss-for"  title="Scored for">GF</th>
           <th id="ss-agst" title="Conceded">GA</th>
           <th title="GF minus GA">Diff</th>
-          <th title="GF as a share of everything played">Share</th>
+          <th title="Total points divided by matches played — the first thing the ranking looks at">Per match</th>
         </tr></thead>
         <tbody id="ss-body"></tbody></table>
         <div class="card-f" id="ss-foot"></div>
@@ -731,6 +751,12 @@
   /* ========================================================================== */
 
   var KEY="modestalk-league-v1";
+  /* Practice mode: a sandbox for trying a session without signing in. It lives
+     in its own slot in this browser, makes no network calls at all, and can
+     never reach the league — so anyone can open the page and have a play. */
+  var PRACTICE_KEY="tf-league-practice-v1", PRACTICE_FLAG="tf-league-practice-on";
+  var practice=false;
+  function storeKey(){ return practice ? PRACTICE_KEY : KEY; }
   var START_ELO=1500;
   var SESSION_POINTS=[10,8,6,5,4,3,2,1];   // by finishing position, then 1
   var PRIOR_MATCHES=2;   // notional even matches every player is credited with, for ranking only
@@ -776,18 +802,19 @@
   function pad(n){return (n<10?"0":"")+n}
   function stamp(){var t=new Date();return pad(t.getHours())+":"+pad(t.getMinutes())+":"+pad(t.getSeconds())}
   function saveLocalOnly(){
-    try{ window.localStorage.setItem(KEY,JSON.stringify(S)); }catch(e){}
+    try{ window.localStorage.setItem(storeKey(),JSON.stringify(S)); }catch(e){}
   }
   function save(){
     try{
-      window.localStorage.setItem(KEY,JSON.stringify(S));
-      flag(true,"Saved on this device · "+stamp());
+      window.localStorage.setItem(storeKey(),JSON.stringify(S));
+      flag(true, practice ? "Practice — saved on this device only · "+stamp()
+                          : "Saved on this device · "+stamp());
     }catch(e){ flag(false,"Not saved — storage blocked. Export a backup."); }
     scheduleSync();
   }
   function load(){
     try{
-      var raw=window.localStorage.getItem(KEY);
+      var raw=window.localStorage.getItem(storeKey());
       if(!raw){ flag(true,"New league — everything saves automatically"); return; }
       var o=JSON.parse(raw);
       if(o&&o.v===1){ S=o; if(!S.history) S.history=[]; flag(true,"Loaded from this device"); }
@@ -1087,9 +1114,55 @@
       var x=t[id], tot=x.pts+x.against;
       x.raw   = tot ? x.pts/tot : 0;
       x.share = (x.pts + prior/2) / (tot + prior);
-      x.diff  = x.pts-x.against;
+      x.diff  = x.pts-x.against;             // point difference
+      x.mdiff = x.wins-(x.rounds-x.wins);    // matches won minus matches lost
+      x.wpct  = x.rounds ? x.wins/x.rounds : 0;
+      // win rate, shrunk the same way as points so a single match can't top the
+      // table and so playing one round more is never worth a place on its own
+      x.wrate = (x.wins + PRIOR_MATCHES/2) / (x.rounds + PRIOR_MATCHES);
     });
+    // head to head: point difference counted only in matches the two played on
+    // opposite sides. Partners rotate, so most pairs never meet.
+    var h2h={};
+    live.rounds.forEach(function(rd){
+      rd.courts.forEach(function(c){
+        if(c.sa===null||c.sb===null) return;
+        c.a.forEach(function(x){ c.b.forEach(function(y){
+          h2h[x+"|"+y]=(h2h[x+"|"+y]||0)+(c.sa-c.sb);
+          h2h[y+"|"+x]=(h2h[y+"|"+x]||0)+(c.sb-c.sa);
+        }); });
+      });
+    });
+    // hidden, so anything that walks the table by key never sees it as a player
+    Object.defineProperty(t,"__h2h",{value:h2h,enumerable:false});
     return t;
+  }
+
+  /* One ranking rule, used by the live table and by the recorded result so they
+     can never disagree:
+       1  matches won           — as a rate, so a player on six matches is not
+                                 behind a player on seven for playing less
+       2  points per match      — the margin, same normalisation
+       3  point difference
+       4  match difference   — won minus lost
+       5  head to head       — the two players' own matches against each other
+       6  current rating     — a deterministic last resort, so every device
+                               replays the same order */
+  function rankIds(t, ids){
+    var h2h=t.__h2h||{};
+    var out=ids.slice();
+    out.sort(function(a,b){
+      var A=t[a], B=t[b];
+      if(B.wrate!==A.wrate) return B.wrate-A.wrate;   // winning comes first
+      if(B.share!==A.share) return B.share-A.share;   // then the margin
+      if(B.diff!==A.diff)   return B.diff-A.diff;
+      if(B.mdiff!==A.mdiff) return B.mdiff-A.mdiff;
+      var h=h2h[a+"|"+b];
+      if(h!==undefined && h!==0) return -h;
+      var pa=byId(a), pb=byId(b);
+      return (pb?pb.elo:0)-(pa?pa.elo:0);
+    });
+    return out;
   }
   function playedCount(live){
     var n={};
@@ -1636,29 +1709,28 @@
     el("ss-agst").textContent = G?"GA":"PA";
     el("ss-for").title  = G?"Games won":"Points won";
     el("ss-agst").title = G?"Games conceded":"Points conceded";
-    el("ss-foot").textContent = "Played = matches on court. Won = matches won. "+
-      (G?"GF/GA = games":"PF/PA = points")+" won and conceded. Share = "+(G?"GF":"PF")+
-      " ÷ ("+(G?"GF+GA":"PF+PA")+"), so sitting out never costs you and the rotation never has to finish. "+
-      "For the ranking, everyone is credited with "+PRIOR_MATCHES+" notional even matches, which is why "+
-      "someone who has played only a round or two sits nearer the middle until they have played more.";
+    el("ss-foot").textContent = "Winning the night comes first: ranked on win %, then points per match, "+
+      "then point difference, then matches won minus lost, then head to head. Both are counted per match, "+
+      "so playing one round more than everyone else is never worth a place on its own, and everyone is "+
+      "credited with "+PRIOR_MATCHES+" notional even matches until they have played a few. Margins still "+
+      "drive the ratings — those read every point. "+(G?"GF/GA = games":"PF/PA = points")+" won and conceded.";
     var rows=live.attendees.map(function(id){
       var x=t[id];
       return {id:id,pts:x.pts,against:x.against,rounds:x.rounds,wins:x.wins,
-              share:x.share,raw:x.raw,diff:x.diff};
-    }).sort(function(a,b){
-      if(b.share!==a.share) return b.share-a.share;
-      if(b.wins!==a.wins) return b.wins-a.wins;
-      if(b.diff!==a.diff) return b.diff-a.diff;
-      return byId(b.id).elo-byId(a.id).elo;
+              share:x.share,raw:x.raw,diff:x.diff,wpct:x.wpct};
     });
+    var order=rankIds(t, rows.map(function(r){ return r.id; }));
+    rows.sort(function(a,b){ return order.indexOf(a.id)-order.indexOf(b.id); });
     var maxR=rows.reduce(function(m,r){ return Math.max(m,r.rounds); },0);
     el("ss-body").innerHTML=rows.map(function(r,i){
       var p=byId(r.id);
       var cls=i===0?"p1":(i<3?"p2":"");
       return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(dispName(p))+tag(p)+'</td>'+
-        '<td>'+r.rounds+'</td><td>'+r.wins+'</td><td>'+r.pts+'</td><td>'+r.against+'</td>'+
+        '<td>'+r.rounds+'</td><td>'+r.wins+'</td>'+
+        '<td>'+(r.rounds?Math.round(r.wpct*100)+"%":"–")+'</td>'+
+        '<td>'+r.pts+'</td><td>'+r.against+'</td>'+
         '<td>'+(r.diff>0?"+":"")+r.diff+'</td>'+
-        '<td>'+(r.rounds?Math.round((r.raw!==undefined?r.raw:r.share)*100)+"%":"–")+
+        '<td>'+(r.rounds?(r.pts/r.rounds).toFixed(1):"–")+
         (r.rounds&&r.rounds<maxR?' <small class="n">('+r.rounds+' of '+maxR+')</small>':"")+
         '</td></tr>';
     }).join("");
@@ -2172,8 +2244,8 @@
       'record only. Rating/Δ columns show no movement.</div>' : '';
 
     var std=notRated+'<div class="card"><div class="card-h">'+esc(x.date)+' · final standing</div>'+
-      '<table><thead><tr><th></th><th>Player</th><th>Played</th><th>Won</th>'+
-      '<th>'+(G?"GF":"PF")+'</th><th>'+(G?"GA":"PA")+'</th><th>Share</th><th>Month pts</th><th>Rating</th><th>±</th><th>Δ</th></tr></thead><tbody>'+
+      '<table><thead><tr><th></th><th>Player</th><th>Played</th><th>Won</th><th>Win %</th>'+
+      '<th>'+(G?"GF":"PF")+'</th><th>'+(G?"GA":"PA")+'</th><th>Per match</th><th>Month pts</th><th>Rating</th><th>±</th><th>Δ</th></tr></thead><tbody>'+
       displayStandings(x, x.table).map(function(r,i){
         var cls=i===0?"p1":(i<3?"p2":"");
         // A Fixed Partner row is one team, but rating is still genuinely
@@ -2190,8 +2262,10 @@
           return '<span class="'+(rt.delta>0?"up":(rt.delta<0?"dn":""))+'">'+fmtSigned(rt.delta)+'</span>';
         }).join("<br>");
         return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(r.name)+'</td>'+
-          '<td>'+r.played+'</td><td>'+r.wins+'</td><td>'+r.pts+'</td><td>'+r.against+'</td>'+
-          '<td>'+Math.round((r.raw!==undefined?r.raw:r.share)*100)+'%</td><td>'+r.monthPts+'</td>'+
+          '<td>'+r.played+'</td><td>'+r.wins+'</td>'+
+          '<td>'+(r.played?Math.round(100*r.wins/r.played)+"%":"–")+'</td>'+
+          '<td>'+r.pts+'</td><td>'+r.against+'</td>'+
+          '<td>'+(r.played?(r.pts/r.played).toFixed(1):"–")+'</td><td>'+fmtPts(r.monthPts)+'</td>'+
           '<td>'+ratingCell+'</td><td>'+rdCell+'</td><td>'+deltaCell+'</td></tr>';
       }).join("")+'</tbody></table></div>';
 
@@ -2560,7 +2634,8 @@
   function fmtPts(n){ return (Math.round(n*10)/10).toString(); }
   function pts(n){ return fmtPts(n)+(Math.abs(n)===1?" pt":" pts"); }
   function shareHead(kick,title,when){
-    return '<div class="sc-top"><div><div class="sc-kick">'+esc(kick)+'</div>'+
+    return '<div class="sc-top"><div><div class="sc-kick">'+
+      (practice?"PRACTICE · ":"")+esc(kick)+'</div>'+
       '<div class="sc-title">'+esc(title)+'</div>'+
       (when?'<div class="sc-when">'+esc(when)+'</div>':"")+'</div><div class="sc-dot"></div></div>';
   }
@@ -2625,7 +2700,7 @@
         '<div class="sc-body">'+
           podiumBlock(t.slice(0,3),
             function(r){ return pts(r.monthPts); },
-            function(r){ return Math.round((r.raw!==undefined?r.raw:r.share)*100)+"%"; })+
+            function(r){ return r.played ? r.wins+" of "+r.played+" won" : ""; })+
           (rest.length?'<div class="sc-rows'+(fmt==="screen"&&rest.length>2?" two":"")+'">'+rest.map(function(r,i){
             return '<div class="sc-row"><span class="r">'+(i+4)+'</span><span class="n">'+esc(r.name)+'</span>'+
               '<span class="v">'+fmtPts(r.monthPts)+'<small>'+(Math.abs(r.monthPts)===1?"pt":"pts")+'</small></span></div>';
@@ -2946,10 +3021,9 @@
     });
 
     var t=sessionTotals({attendees:rec.attendees, rounds:rec.rounds, target:rec.target});
-    var ranked=rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; })
-      .map(function(id){ return {id:id,share:t[id].share,wins:t[id].wins,diff:t[id].diff}; })
-      .sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff)
-                                  ||(byId(b.id)?byId(b.id).elo:0)-(byId(a.id)?byId(a.id).elo:0); });
+    var ranked=rankIds(t, rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; }))
+      .map(function(id){ return {id:id,share:t[id].share,wins:t[id].wins,wrate:t[id].wrate,
+                                 diff:t[id].diff,mdiff:t[id].mdiff}; });
 
     /* Players who finish genuinely level share the points for the places they
        occupy. Two tied for 1st take (10+8)/2 = 9 each. Without this the last
@@ -2958,7 +3032,8 @@
        When the session isn't rated, this loop still runs so the standings
        order is known (for display), it just never writes to a player. */
     function place(i){ return i<SESSION_POINTS.length ? SESSION_POINTS[i] : 1; }
-    function level(a,b){ return a.share===b.share && a.wins===b.wins && a.diff===b.diff; }
+    function level(a,b){ return a.wrate===b.wrate && a.share===b.share &&
+                                a.diff===b.diff && a.mdiff===b.mdiff; }
     var i0=0;
     while(i0<ranked.length){
       var i1=i0;
@@ -3195,6 +3270,7 @@
   // has been set up locally.
   function builtinReady(){ return !!(BUILTIN_SYNC.url && BUILTIN_SYNC.key); }
   function syncCfg(){
+    if(practice) return null;                        // a sandbox never talks to the league
     if(S.sync===null && S.syncOff) return null;      // deliberately turned off here
     if(S.sync) return S.sync;
     return builtinReady() ? BUILTIN_SYNC : null;
@@ -3230,7 +3306,7 @@
               : window.localStorage.removeItem(AKEY); }catch(e){}
   }
   function isRealHost(){ return !!(AUTH && AUTH.refresh_token); }
-  function isHost(){ return isRealHost(); }
+  function isHost(){ return isRealHost() || practice; }
   function tokenFresh(){
     return !!(AUTH && AUTH.access_token && AUTH.exp && (AUTH.exp*1000 - Date.now() > 300000));
   }
@@ -3302,11 +3378,51 @@
   // not security -- the database policies are what actually stop a write.
   function applyHostMode(){
     var h=isHost();
-    ["tab-session","btn-syncset","btn-import","btn-wipe","btn-close-month","btn-addplayer"]
+    ["tab-session","btn-import","btn-wipe","btn-close-month","btn-addplayer"]
       .forEach(function(id){ var e=el(id); if(e) e.style.display = h ? "" : "none"; });
+    // these only make sense against the real league
+    ["btn-syncset","btn-sync","btn-host"].forEach(function(id){
+      var e=el(id); if(e) e.style.display = practice ? "none" : (id==="btn-syncset" && !h ? "none" : "");
+    });
+    var pb=el("btn-practice");
+    if(pb) pb.hidden=true;   // deliberately unreachable by tapping — see #practice
+    var bar=el("pracbar"); if(bar) bar.hidden=!practice;
     var b=el("btn-host");
     if(b) b.textContent = isRealHost() ? ("Host · "+(AUTH.email||"signed in")+" · sign out")
       : "Host sign in";
+  }
+
+  /* ---------------- practice mode ---------------- */
+  function practiceStart(seed){
+    practice=true;
+    try{ window.localStorage.setItem(PRACTICE_FLAG,"1"); }catch(e){}
+    var raw=null;
+    try{ raw=window.localStorage.getItem(PRACTICE_KEY); }catch(e){}
+    if(raw && !seed){
+      try{ var o=JSON.parse(raw); if(o&&o.v===1){ S=o; if(!S.history) S.history=[]; } }catch(e){}
+    } else {
+      // start from a copy of the real roster, so a practice night feels real
+      var copy=JSON.parse(JSON.stringify(S));
+      copy.live=null; copy.sync=null; copy.syncOff=true; copy.slides=[];
+      S=copy;
+      saveLocalOnly();
+    }
+    setView("session");
+    flag(true,"Practice mode — nothing here reaches the league");
+  }
+  function practiceExit(){
+    saveLocalOnly();                       // keep the sandbox for next time
+    practice=false;
+    try{ window.localStorage.removeItem(PRACTICE_FLAG); }catch(e){}
+    if(location.hash==="#practice"){
+      try{ history.replaceState(null,"",location.pathname+location.search); }
+      catch(e){ location.hash=""; }
+    }
+    S={v:1,epoch:0,players:[],months:{},live:null,history:[],removed:{}};
+    load();
+    setView(isHost()?"session":"month");
+    flag(true,"Back on the real league");
+    scheduleSync(300);
   }
 
   function syncRead(cb){
@@ -3669,6 +3785,25 @@
       }});
   });
 
+  el("btn-practice").addEventListener("click",function(){
+    confirmBox("Start a practice session?",
+      "Practice mode is a sandbox in this browser. It copies the current roster so a trial night "+
+      "feels real, then keeps everything to itself — no sign-in needed, no network calls, and the "+
+      "league's standings and ratings are never touched.\n\n"+
+      "Leave practice any time and the real league comes back exactly as it was.",
+      "Start practice", function(){ practiceStart(true); });
+  });
+  el("btn-prac-exit").addEventListener("click",practiceExit);
+  el("btn-prac-reset").addEventListener("click",function(){
+    confirmBox("Reset the sandbox?","Clears everything you have done in practice and takes a fresh "+
+      "copy of the real roster. The league itself is not affected.","Reset",function(){
+        practice=false;
+        S={v:1,epoch:0,players:[],months:{},live:null,history:[],removed:{}};
+        load();
+        practiceStart(true);
+        render();
+      });
+  });
   el("btn-host").addEventListener("click",function(){
     if(isHost()){ hostSignOut(); flag(true,"Signed out — league is read-only on this device"); return; }
     var bg=document.createElement("div"); bg.className="modal-bg";
@@ -3711,6 +3846,15 @@
   });
 
   /* ---------------- boot ---------------- */
+  // a sandbox left open stays open across a refresh, and #practice opens one
+  try{
+    if(window.localStorage.getItem(PRACTICE_FLAG)==="1" ||
+       location.hash==="#practice") practice=true;
+  }catch(e){}
+  if(practice){ try{ window.localStorage.setItem(PRACTICE_FLAG,"1"); }catch(e){} }
+  window.addEventListener("hashchange",function(){
+    if(location.hash==="#practice" && !practice){ practiceStart(true); render(); }
+  });
   load();
   migrateGlicko();
   migrateCounting();
@@ -3726,8 +3870,10 @@
   // exposed for testing
   window.__league={get S(){return S}, set S(v){S=v}, glicko:glicko, matchDetail:matchDetail, makeRound:makeRound,
                    mergeStores:mergeStores, adoptStore:adoptStore, recomputeAll:recomputeAll,
-                   sessionTotals:sessionTotals, render:render, setView:setView, byId:byId,
+                   sessionTotals:sessionTotals, rankIds:rankIds, render:render, setView:setView, byId:byId,
                    kioskStep:kioskStep, kioskSlides:kioskSlides, paintCard:paintCard,
+                   practiceStart:practiceStart, practiceExit:practiceExit,
+                   get practice(){return practice},
                    displayStandings:displayStandings, teamsOfRecord:teamsOfRecord};
 })();
 </script>
