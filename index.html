@@ -924,14 +924,33 @@
         ratings:[{name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}]};
     });
     var byId2={}; (table||[]).forEach(function(r){ byId2[r.id]=r; });
+    var teamOfId={};
+    teams.forEach(function(team){ team.forEach(function(id){ teamOfId[id]=team; }); });
     var used={}, out=[];
-    teams.forEach(function(team){
+    // Walk `table` in the order it was ALREADY ranked in at commit time —
+    // by rankIds (wrate, then share, then diff, then mdiff, then h2h, then
+    // rating) — and emit one row per team the first time either teammate is
+    // reached. A Fixed Partner standing then sits in exactly the same order
+    // as every other session instead of being re-sorted by a second,
+    // looser rule (point share alone) that can disagree with rankIds —
+    // e.g. a team that lost most nights narrowly (good share, bad win rate)
+    // outranking one that won clearly more often but by less combined margin.
+    (table||[]).forEach(function(r){
+      if(used[r.id]) return;
+      var team=teamOfId[r.id];
+      if(!team){
+        used[r.id]=1;
+        out.push({name:r.name, ids:[r.id], row:r, share:r.share, wins:r.wins, diff:r.diff,
+          pts:r.pts, against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts,
+          ratings:[{name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}]});
+        return;
+      }
       var rows=team.map(function(id){ return byId2[id]; }).filter(Boolean);
       if(!rows.length) return;
-      rows.forEach(function(r){ used[r.id]=1; });
+      rows.forEach(function(x){ used[x.id]=1; });
       var base=rows[0];
       out.push({
-        name: rows.map(function(r){ return r.name; }).join(" & "),
+        name: rows.map(function(x){ return x.name; }).join(" & "),
         ids: team.slice(), row: base,
         // Identical across teammates in a fixed session (they share every
         // round), so either one's numbers are the team's numbers — except
@@ -943,15 +962,9 @@
         // rather than a summed total that would look like a different scale
         // from every solo-format session next to it.
         monthPts: base.monthPts,
-        ratings: rows.map(function(r){ return {name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}; })
+        ratings: rows.map(function(x){ return {name:x.name, after:x.after, rdAfter:x.rdAfter, delta:x.delta}; })
       });
     });
-    (table||[]).forEach(function(r){
-      if(!used[r.id]) out.push({name:r.name, ids:[r.id], row:r, share:r.share, wins:r.wins, diff:r.diff,
-        pts:r.pts, against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts,
-        ratings:[{name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}]});
-    });
-    out.sort(function(a,b){ return (b.share-a.share)||(b.wins-a.wins)||(b.diff-a.diff); });
     return out;
   }
   function monthKey(d){ return (d||new Date().toISOString().slice(0,10)).slice(0,7); }
