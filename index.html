@@ -636,7 +636,7 @@
       <div class="fbar" id="rt-filter"></div>
       <table><thead><tr><th></th><th>Player</th><th>Division</th><th>Matches</th><th title="How sure the rating is — smaller is surer">±</th><th>Peak</th><th>Rating</th></tr></thead>
       <tbody id="rt-body"></tbody></table>
-      <div class="card-f">Glicko-2. Each rating carries a <b>±</b> — how sure the system is. It starts wide, narrows as you play, and widens again if you stop coming, so a returning player moves quickly back to where they belong. <b>Settling</b> means the ± is still above 110. Divisions are 100 points apart and are <b>club-internal</b> — Div 2 here is not a national grade. One division up means winning roughly 64% of the time against the division below.</div>
+      <div class="card-f">Glicko-2. Each rating carries a <b>±</b> — how sure the system is. It starts wide and narrows as you play. <b>Settling</b> means the ± is still above 110, usually just because a rating is new. <b>Inactive</b> means the same thing, plus it's been 30+ days since they last played — hidden from this list by default, since a rating nobody's updated in a month isn't a current form read. Divisions are 100 points apart and are <b>club-internal</b> — Div 2 here is not a national grade. One division up means winning roughly 64% of the time against the division below.</div>
     </div>
     <div class="card">
       <div class="card-h">Top by category</div>
@@ -772,6 +772,9 @@
   };
   function modeOf(live){ return MODES[(live&&live.mode)||"fixedpts"]; }
   var MIN_SESSIONS=3;
+  var MIN_ROUNDS_SESSION=3;   // a player needs this many rounds IN a session to take a ranked
+                              // position / points that night — played-but-short rows still show,
+                              // just unranked (n/q), so one lucky/unlucky round can't land a podium spot
   var MIN_FIELD=3;   // a division needs this many qualified players to pay a prize
   var COUNTING=3;   // only a player's best 3 session scores count toward the month
   // Bands are club-relative, anchored on the 1500 start. The gap between one
@@ -786,7 +789,7 @@
     {min:-1e9, name:"Div 5", css:"b1"}
   ];
   function bandOf(p){
-    if(rdOf(p)>RD_SETTLED) return {name:"Settling",css:"b0"};
+    if(!isSettled(p)) return isInactive(p) ? {name:"Inactive",css:"b0"} : {name:"Settling",css:"b0"};
     for(var i=0;i<BANDS.length;i++) if(p.elo>=BANDS[i].min) return BANDS[i];
     return BANDS[BANDS.length-1];
   }
@@ -920,7 +923,7 @@
     var teams=teamsOfRecord(rec);
     if(!teams) return (table||[]).map(function(r){
       return {name:r.name, ids:[r.id], row:r, share:r.share, wins:r.wins, diff:r.diff, pts:r.pts,
-        against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts,
+        against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts, nq:!!r.nq,
         ratings:[{name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}]};
     });
     var byId2={}; (table||[]).forEach(function(r){ byId2[r.id]=r; });
@@ -941,7 +944,7 @@
       if(!team){
         used[r.id]=1;
         out.push({name:r.name, ids:[r.id], row:r, share:r.share, wins:r.wins, diff:r.diff,
-          pts:r.pts, against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts,
+          pts:r.pts, against:r.against, played:r.played, raw:r.raw, monthPts:r.monthPts, nq:!!r.nq,
           ratings:[{name:r.name, after:r.after, rdAfter:r.rdAfter, delta:r.delta}]});
         return;
       }
@@ -956,7 +959,7 @@
         // round), so either one's numbers are the team's numbers — except
         // rating, which stays genuinely per-player and is shown per player.
         share:base.share, wins:base.wins, diff:base.diff, pts:base.pts,
-        against:base.against, played:base.played, raw:base.raw,
+        against:base.against, played:base.played, raw:base.raw, nq:!!base.nq,
         // Both teammates earn the same point value off a fixed session (they're
         // tied with each other by definition), so show that one shared number
         // rather than a summed total that would look like a different scale
@@ -1024,6 +1027,32 @@
   var RD_START=350, RD_MIN=30, RD_MAX=350, VOL_START=0.06;
   var RD_SETTLED=110;
   var RD_IDLE=30;                         // extra uncertainty per session missed                     // above this a rating is still "Settling"
+  var INACTIVE_DAYS=30;   // hasn't played in this long -> "Inactive", not "Settling"
+
+  function isSettled(p){ return rdOf(p)<=RD_SETTLED; }
+  // Last calendar date this player actually played a round, from the real
+  // session history — not p.t, which is a record-edit timestamp (bumped on
+  // archive/restore/rename, for sync conflict resolution) and says nothing
+  // about when someone last showed up to play.
+  function lastPlayedDate(p){
+    var last=null;
+    (S.history||[]).forEach(function(h){
+      var row=(h.table||[]).filter(function(r){ return r.id===p.id && r.played>0; })[0];
+      if(row && (!last || h.date>last)) last=h.date;
+    });
+    return last;
+  }
+  function daysIdle(p){
+    var d=lastPlayedDate(p);
+    if(!d) return Infinity;   // never played a rated round at all
+    return Math.floor((Date.now()-new Date(d+"T00:00:00").getTime())/86400000);
+  }
+  // Unsettled (± still above 110) splits two ways: genuinely new (played
+  // recently, just hasn't banked enough matches yet) vs. genuinely gone
+  // (hasn't played in INACTIVE_DAYS+). RD_IDLE only widens ± by a little per
+  // missed session, so without this a player who vanished a year ago and one
+  // who started last week both read as the same "Settling" badge forever.
+  function isInactive(p){ return !isSettled(p) && daysIdle(p)>=INACTIVE_DAYS; }
 
   function gPhi(phi){ return 1/Math.sqrt(1+3*phi*phi/(Math.PI*Math.PI)); }
   function expected(teamAvg,oppAvg){ return 1/(1+Math.pow(10,(oppAvg-teamAvg)/400)); }
@@ -1426,7 +1455,16 @@
     else{
       var q=(S.playerQuery||"").trim().toLowerCase();
       var pool=S.showArchived ? S.players.slice() : activePlayers();
-      var list=pool.sort(function(a,b){return (a.hidden?1:0)-(b.hidden?1:0) || a.name.localeCompare(b.name)})
+      // Archived sinks lowest, inactive (hasn't played in a while) sinks just
+      // above that — same idea as archived, minus the "someone decided this"
+      // step. Keeps the roster's top half the people actually showing up.
+      var list=pool.sort(function(a,b){
+          var ha=a.hidden?1:0, hb=b.hidden?1:0;
+          if(ha!==hb) return ha-hb;
+          var ia=isInactive(a)?1:0, ib=isInactive(b)?1:0;
+          if(ia!==ib) return ia-ib;
+          return a.name.localeCompare(b.name);
+        })
         .filter(function(p){ return !q || p.name.toLowerCase().indexOf(q)>=0; });
       el("pl-count").textContent = q
         ? list.length+" of "+pool.length
@@ -1543,13 +1581,20 @@
       .map(function(h){
         var row=(h.table||[]).filter(function(r){return r.id===id})[0];
         if(!row) return null;
-        // tied players share a position, the way a leaderboard reads
-        var tb=h.table||[], at=tb.map(function(r){return r.id}).indexOf(id), pos=at+1;
-        for(var q=at-1;q>=0;q--){
-          if(tb[q].share===tb[at].share && tb[q].wins===tb[at].wins && tb[q].diff===tb[at].diff) pos=q+1;
-          else break;
+        // n/q (under the rounds floor) has no ranked position at all — don't
+        // place it among players who actually cleared the floor that night.
+        var minR=h.minRounds||MIN_ROUNDS_SESSION, pos=null, of=0;
+        if(!row.nq){
+          // tied players share a position, the way a leaderboard reads
+          var tb=(h.table||[]).filter(function(r){return !r.nq;});
+          of=tb.length;
+          var at=tb.map(function(r){return r.id}).indexOf(id); pos=at+1;
+          for(var q=at-1;q>=0;q--){
+            if(tb[q].share===tb[at].share && tb[q].wins===tb[at].wins && tb[q].diff===tb[at].diff) pos=q+1;
+            else break;
+          }
         }
-        return {date:h.date,month:h.month,mode:h.mode,target:h.target,pos:pos,of:(h.table||[]).length,
+        return {date:h.date,month:h.month,mode:h.mode,target:h.target,pos:pos,of:of,nq:!!row.nq,minRounds:minR,
                 before:row.before,after:row.after,delta:row.delta,monthPts:row.monthPts,
                 played:row.played,wins:row.wins,share:row.share};
       }).filter(Boolean);
@@ -1579,17 +1624,19 @@
     var vals=[ss[0].before].concat(ss.map(function(x){return x.after}));
     var weekly='<table class="wk"><thead><tr><th class="l">Session</th><th>Pos</th><th>W</th><th>Share</th><th>Rating</th><th>Δ</th><th>Mth pts</th></tr></thead><tbody>'+
       ss.slice().reverse().map(function(x){
-        return '<tr><td class="l">'+esc(x.date)+'</td><td>'+x.pos+'/'+x.of+'</td><td>'+x.wins+'/'+x.played+'</td>'+
+        var posCell = x.nq ? x.played+'/'+x.minRounds+' <small class="n">n/q</small>' : x.pos+'/'+x.of;
+        return '<tr><td class="l">'+esc(x.date)+'</td><td>'+posCell+'</td><td>'+x.wins+'/'+x.played+'</td>'+
           '<td>'+Math.round(x.share*100)+'%</td><td>'+Math.round(x.after)+'</td>'+
           '<td class="'+(x.delta>0?"up":(x.delta<0?"dn":""))+'">'+fmtSigned(x.delta)+'</td>'+
-          '<td>'+x.monthPts+'</td></tr>';
+          '<td>'+(x.nq?"–":x.monthPts)+'</td></tr>';
       }).join("")+'</tbody></table>';
 
     var months={};
     ss.forEach(function(x){
       if(!months[x.month]) months[x.month]={sessions:0,pts:0,scores:[],first:x.before,last:x.after,best:99};
       var m=months[x.month];
-      m.sessions++; m.pts+=x.monthPts; m.scores.push(x.monthPts); m.last=x.after; m.best=Math.min(m.best,x.pos);
+      m.sessions++; m.pts+=x.monthPts; m.scores.push(x.monthPts); m.last=x.after;
+      if(!x.nq) m.best=Math.min(m.best,x.pos);   // n/q sessions have no finish to count
     });
     var mk=Object.keys(months).sort().reverse();
     var mtab='<table class="wk"><thead><tr><th class="l">Month</th><th>Sessions</th><th>Best 3</th><th>Total</th><th>Best finish</th><th>Rating start</th><th>Rating end</th><th>Δ</th><th>Podium</th><th>MIP</th></tr></thead><tbody>'+
@@ -1599,7 +1646,7 @@
         var place=pod.map(function(x){return x.name}).indexOf(p.name);
         var b3=m.scores.slice().sort(function(x,y){return y-x}).slice(0,COUNTING).reduce(function(x,y){return x+y},0);
         return '<tr><td class="l">'+monthName(k)+'</td><td>'+m.sessions+'</td><td>'+b3+'</td><td>'+m.pts+'</td>'+
-          '<td>'+m.best+'</td><td>'+Math.round(m.first)+'</td><td>'+Math.round(m.last)+'</td>'+
+          '<td>'+(m.best<99?m.best:"–")+'</td><td>'+Math.round(m.first)+'</td><td>'+Math.round(m.last)+'</td>'+
           '<td class="'+(d>0?"up":(d<0?"dn":""))+'">'+fmtSigned(d)+'</td>'+
           '<td>'+(place>=0?["1st","2nd","3rd"][place]:(m.sessions>=MIN_SESSIONS?"–":"n/q"))+'</td>'+
           '<td>'+((S.months[k]&&S.months[k].improved&&S.months[k].improved.name===p.name)?"★":"–")+'</td></tr>';
@@ -1766,19 +1813,25 @@
       "then point difference, then matches won minus lost, then head to head. Both are counted per match, "+
       "so playing one round more than everyone else is never worth a place on its own, and everyone is "+
       "credited with "+PRIOR_MATCHES+" notional even matches until they have played a few. Margins still "+
-      "drive the ratings — those read every point. "+(G?"GF/GA = games":"PF/PA = points")+" won and conceded.";
+      "drive the ratings — those read every point. "+(G?"GF/GA = games":"PF/PA = points")+" won and conceded. "+
+      "Under "+MIN_ROUNDS_SESSION+" rounds and a player is shown but marked n/q — not enough of a sample "+
+      "yet for a position or the night's points.";
     var rows=live.attendees.map(function(id){
       var x=t[id];
       return {id:id,pts:x.pts,against:x.against,rounds:x.rounds,wins:x.wins,
-              share:x.share,raw:x.raw,diff:x.diff,wpct:x.wpct};
+              share:x.share,raw:x.raw,diff:x.diff,wpct:x.wpct,
+              nq:x.rounds<MIN_ROUNDS_SESSION};
     });
-    var order=rankIds(t, rows.map(function(r){ return r.id; }));
-    rows.sort(function(a,b){ return order.indexOf(a.id)-order.indexOf(b.id); });
+    var qualRows=rows.filter(function(r){ return !r.nq; });
+    var nqRows=rows.filter(function(r){ return r.nq; }).sort(function(a,b){ return b.rounds-a.rounds; });
+    var order=rankIds(t, qualRows.map(function(r){ return r.id; }));
+    qualRows.sort(function(a,b){ return order.indexOf(a.id)-order.indexOf(b.id); });
+    rows=qualRows.concat(nqRows);
     var maxR=rows.reduce(function(m,r){ return Math.max(m,r.rounds); },0);
     el("ss-body").innerHTML=rows.map(function(r,i){
       var p=byId(r.id);
-      var cls=i===0?"p1":(i<3?"p2":"");
-      return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(dispName(p))+tag(p)+'</td>'+
+      var cls = r.nq ? "" : (i===0?"p1":(i<3?"p2":""));
+      return '<tr class="'+cls+'"><td>'+(r.nq?'<span class="prov">n/q</span>':(i+1))+'</td><td>'+esc(dispName(p))+tag(p)+'</td>'+
         '<td>'+r.rounds+'</td><td>'+r.wins+'</td>'+
         '<td>'+(r.rounds?Math.round(r.wpct*100)+"%":"–")+'</td>'+
         '<td>'+r.pts+'</td><td>'+r.against+'</td>'+
@@ -2219,22 +2272,27 @@
     var everyone=activePlayers().sort(function(a,b){return b.elo-a.elo});
     var fb=el("rt-filter");
     var divs=[["all","All"]].concat(BANDS.map(function(b){ return [b.name, b.name.replace("Div ","D")]; }));
+    var inactiveN=everyone.filter(function(p){ return bandOf(p).name==="Inactive"; }).length;
     var rows=everyone.filter(function(p){
       if(!genderOK(p,"rtG")) return false;
       var b=bandOf(p), d=F().rtD||"all";
-      if(F().rtHide && b.name==="Settling") return false;
+      // Inactive (hasn't played in INACTIVE_DAYS+) is hidden by default — it's
+      // dead weight on the leaderboard, not someone to track. Settling (new,
+      // still building up a rating) always stays visible: that's signal, not
+      // clutter. "Show inactive" opts back in when you actually want them.
+      if(!F().rtShowInactive && b.name==="Inactive") return false;
       if(d!=="all" && b.name!==d) return false;
       return true;
     });
     fb.innerHTML=segHTML("rtG",GENDER_OPTS)+segHTML("rtD",divs)+
-      togHTML("rtHide","Hide settling")+
+      togHTML("rtShowInactive","Show inactive"+(inactiveN?" ("+inactiveN+")":""))+
       '<span class="count">'+rows.length+' of '+everyone.length+' shown</span>';
     wireFilter(fb, renderRatings);
     if(!everyone.length){ el("rt-body").innerHTML='<tr><td colspan="7"><div class="empty">No players yet.</div></td></tr>'; el("rt-cats").innerHTML=""; return; }
     if(!rows.length){
       el("rt-body").innerHTML='<tr><td colspan="7"><div class="empty">'+
         ((F().rtD||"all")!=="all"
-          ? "Nobody is in "+F().rtD+" yet"+(F().rtHide?"":" — settling players have no division")+"."
+          ? "Nobody is in "+F().rtD+" yet"+(inactiveN&&!F().rtShowInactive?"":" — settling players have no division")+"."
           : "Nobody matches these filters.")+'</div></td></tr>';
     } else
     el("rt-body").innerHTML=rows.map(function(p,i){
@@ -2268,7 +2326,7 @@
     if(!h.length){ el("se-list").innerHTML='<div class="empty">No sessions recorded yet.</div>'; el("se-detail").innerHTML=""; return; }
     el("se-list").innerHTML=h.map(function(x){
       var M=MODES[x.mode]||MODES.fixedpts;
-      var pod = displayStandings(x, x.table).slice(0,3)
+      var pod = displayStandings(x, x.table).filter(function(r){ return !r.nq; }).slice(0,3)
         .map(function(r,i){ return (i+1)+". "+esc(r.name); }).join("  ");
       return '<div class="selog" data-s="'+x.id+'" aria-expanded="'+(S.seOpen===x.id?"true":"false")+'">'+
         '<span class="dt">'+esc(x.date)+'</span>'+
@@ -2296,11 +2354,21 @@
       'This session was not counted toward ratings, division or the monthly league — scores below are the night\'s '+
       'record only. Rating/Δ columns show no movement.</div>' : '';
 
+    var minR=x.minRounds||MIN_ROUNDS_SESSION;
+    var stdRows=displayStandings(x, x.table);
+    var anyNq=stdRows.some(function(r){ return r.nq; });
+    var rankNo=0;
     var std=notRated+'<div class="card"><div class="card-h">'+esc(x.date)+' · final standing</div>'+
       '<table><thead><tr><th></th><th>Player</th><th>Played</th><th>Won</th><th>Win %</th>'+
       '<th>'+(G?"GF":"PF")+'</th><th>'+(G?"GA":"PA")+'</th><th>Per match</th><th>Month pts</th><th>Rating</th><th>±</th><th>Δ</th></tr></thead><tbody>'+
-      displayStandings(x, x.table).map(function(r,i){
-        var cls=i===0?"p1":(i<3?"p2":"");
+      stdRows.map(function(r){
+        // n/q rows don't consume a rank — the counter only advances for
+        // players who cleared the rounds floor, so "p1"/top-3 styling and
+        // the position number both reflect the real ranked field, not the
+        // row's position in the array.
+        var cls = r.nq ? "" : (rankNo===0?"p1":(rankNo<3?"p2":""));
+        var posCell = r.nq ? '<span class="prov">'+r.played+'/'+minR+'</span>' : (rankNo+1);
+        if(!r.nq) rankNo++;
         // A Fixed Partner row is one team, but rating is still genuinely
         // per-player — show both, stacked, rather than merging two different
         // numbers into one.
@@ -2314,13 +2382,17 @@
         var deltaCell=r.ratings.map(function(rt){
           return '<span class="'+(rt.delta>0?"up":(rt.delta<0?"dn":""))+'">'+fmtSigned(rt.delta)+'</span>';
         }).join("<br>");
-        return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+esc(r.name)+'</td>'+
+        return '<tr class="'+cls+'"><td>'+posCell+'</td><td>'+esc(r.name)+'</td>'+
           '<td>'+r.played+'</td><td>'+r.wins+'</td>'+
           '<td>'+(r.played?Math.round(100*r.wins/r.played)+"%":"–")+'</td>'+
           '<td>'+r.pts+'</td><td>'+r.against+'</td>'+
-          '<td>'+(r.played?(r.pts/r.played).toFixed(1):"–")+'</td><td>'+fmtPts(r.monthPts)+'</td>'+
+          '<td>'+(r.played?(r.pts/r.played).toFixed(1):"–")+'</td>'+
+          '<td>'+(r.nq?'<span class="prov">n/q</span>':fmtPts(r.monthPts))+'</td>'+
           '<td>'+ratingCell+'</td><td>'+rdCell+'</td><td>'+deltaCell+'</td></tr>';
-      }).join("")+'</tbody></table></div>';
+      }).join("")+'</tbody></table>'+
+      (anyNq?'<div class="card-f">n/q = played but under '+minR+' rounds this session — rated as usual, '+
+        'but not ranked and no session points, so a short night can\'t land a podium spot.</div>':"")+
+      '</div>';
 
     var formula='<div class="formula">'+
       '<b>Glicko-2 — how this session moved the ratings</b><br>'+
@@ -2380,8 +2452,8 @@
         var d=Math.round(r.delta);
         return '<tr class="'+cls+'"><td>'+(ok?rank:"–")+'</td>'+
           '<td class="l">'+esc(r.p.name)+(ok?"":'<span class="prov">'+
-            (dim ? (bandOf(r.p).name==="Settling" ? "settling"
-                                                  : bandOf(r.p).name+" next month")
+            (dim ? (!isSettled(r.p) ? bandOf(r.p).name.toLowerCase()
+                                     : bandOf(r.p).name+" next month")
                  : r.sess+"/"+MIN_SESSIONS)+'</span>')+'</td>'+
           '<td>'+r.sess+'</td><td>'+r.best+'</td><td>'+r.pts+'</td>'+
           '<td>'+Math.round(r.p.elo)+'</td>'+
@@ -2401,7 +2473,7 @@
         '</div>'+head+body(g.rows,false)+'</tbody></table></div>';
     }).join("");
     if(dt.settling.length){
-      var placed=dt.settling.filter(function(r){ return bandOf(r.p).name!=="Settling"; }).length;
+      var placed=dt.settling.filter(function(r){ return isSettled(r.p); }).length;
       var firstMonth=!dt.groups.length;
       html+='<div class="dvg"><div class="dvh"><span class="band b0">Settling</span>'+
         '<span class="who">'+(firstMonth ? "unrated when the month opened" : "no division this month")+'</span></div>'+
@@ -2745,7 +2817,9 @@
         return;
       }
       var M=MODES[x.mode]||MODES.fixedpts;
-      var t=displayStandings(x, x.table);
+      // n/q (under the rounds floor) never belongs on a shared podium graphic —
+      // only players who actually have a ranked position this session.
+      var t=displayStandings(x, x.table).filter(function(r){ return !r.nq; });
       var tail = fmt==="screen" ? 7 : (fmt==="print" ? 14 : 8);
       var rest=t.slice(3,tail);
       host.innerHTML=shareHead("Session result", sessionLabel(x)+" night"+(x.rated===false?" — not counted":""),
@@ -2795,7 +2869,11 @@
     }
 
     if(v==="rating"){
-      var settled=activePlayers().filter(function(p){ return (p.matches||0)>0; })
+      // Inactive (hasn't played in a while) never belongs on a public share —
+      // a frozen rating from months ago reads as current form to anyone who
+      // doesn't know the player's actually gone quiet. Settling (new, still
+      // building a rating) stays, just visually de-emphasized, same as before.
+      var settled=activePlayers().filter(function(p){ return (p.matches||0)>0 && !isInactive(p); })
         .sort(function(a,b){ return b.elo-a.elo; });
       if(!settled.length){
         host.innerHTML=shareHead("Club ratings","Nobody has played yet","")+
@@ -3074,7 +3152,16 @@
     });
 
     var t=sessionTotals({attendees:rec.attendees, rounds:rec.rounds, target:rec.target});
-    var ranked=rankIds(t, rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; }))
+    // Anyone who played at least one round still counts toward the month's
+    // session tally (that's unchanged from before this floor existed) — but
+    // a ranked position and the night's points are reserved for players who
+    // reached MIN_ROUNDS_SESSION rounds. Below that, one lucky win (or one
+    // unlucky loss) off a single round is too small a sample to place above
+    // people who played a full night, so those rows are kept — just unranked.
+    var playedIds=rec.attendees.filter(function(id){ return t[id]&&t[id].rounds>0; });
+    var qualifiedIds=playedIds.filter(function(id){ return t[id].rounds>=MIN_ROUNDS_SESSION; });
+    var shortIds=playedIds.filter(function(id){ return t[id].rounds<MIN_ROUNDS_SESSION; });
+    var ranked=rankIds(t, qualifiedIds)
       .map(function(id){ return {id:id,share:t[id].share,wins:t[id].wins,wrate:t[id].wrate,
                                  diff:t[id].diff,mdiff:t[id].mdiff}; });
 
@@ -3105,6 +3192,15 @@
       }
       i0=i1+1;
     }
+    // Short-of-floor players: no points, no rank — but still a session for
+    // monthly attendance purposes, exactly as they were before this floor
+    // existed (that threshold is MIN_SESSIONS, a separate, deliberate rule).
+    shortIds.forEach(function(id){
+      if(!rated) return;
+      var pl=byId(id); if(!pl) return;
+      ensureMonth(pl,k);
+      pl.ms[k]+=1;
+    });
     if(rated){
       S.players.forEach(function(p){
         var out=results[p.id]; if(!out) return;
@@ -3123,6 +3219,7 @@
 
     return {
       month:k, players:rec.attendees.length, rounds:rec.rounds.length, rated:rated,
+      minRounds:MIN_ROUNDS_SESSION,
       table:ranked.map(function(r,i){
         var after = rated && results[r.id] ? results[r.id].elo : snapshot[r.id].elo;
         var rdAfter = rated && results[r.id] ? results[r.id].rd : snapshot[r.id].rd;
@@ -3136,7 +3233,20 @@
                 before:snapshot[r.id].elo, after:after,
                 rdBefore:snapshot[r.id].rd, rdAfter:rdAfter,
                 delta:after-snapshot[r.id].elo};
-      }),
+      }).concat(
+        // Short-of-floor rows go after everyone ranked — played, so still shown
+        // and still rated, just not given a position or any of the night's points.
+        shortIds.slice().sort(function(a,b){ return t[b].rounds-t[a].rounds; }).map(function(id){
+          var after = rated && results[id] ? results[id].elo : snapshot[id].elo;
+          var rdAfter = rated && results[id] ? results[id].rd : snapshot[id].rd;
+          return {name:nameOf(id), id:id, share:t[id].share, wins:t[id].wins, diff:t[id].diff,
+                  pts:t[id].pts, against:t[id].against, played:t[id].rounds, raw:t[id].raw,
+                  nq:true, monthPts:0,
+                  before:snapshot[id].elo, after:after,
+                  rdBefore:snapshot[id].rd, rdAfter:rdAfter,
+                  delta:after-snapshot[id].elo};
+        })
+      ),
       workings:workings, damp:dampFactor(rec.target)
     };
   }
@@ -3155,6 +3265,7 @@
       var sum=applyRecord(h);
       h.month=sum.month; h.players=sum.players; h.rounds_n=sum.rounds;
       h.table=sum.table; h.workings=sum.workings; h.damp=sum.damp; h.rated=sum.rated;
+      h.minRounds=sum.minRounds;
     });
   }
 
